@@ -21,6 +21,11 @@ from src.reporting import export_result, render_result
 
 console = Console()
 
+SHELL_EXAMPLE = (
+    "etf-lab run --target PSP --assets SPY QQQ GLD BND "
+    "--start 2020-01-01 --end 2026-01-01 --max-weight 0.50"
+)
+
 
 def banner() -> Panel:
     logo = Text("ETF REPLICATION LAB", style="bold cyan")
@@ -85,6 +90,15 @@ HELP = """\
   [bold green]/run[/]                         Run and export the experiment
   [bold]/help[/]                        Show this guide
   [bold]/quit[/]                        Leave the lab
+
+[bold cyan]Example inside the app[/]
+  target PSP
+  assets SPY QQQ GLD BND
+  set max-weight 50
+  /run
+
+[bold cyan]Complete shell command[/]
+  etf-lab run --target PSP --assets SPY QQQ GLD BND --start 2020-01-01 --end 2026-01-01 --max-weight 0.50
 """
 
 
@@ -149,9 +163,20 @@ def interactive() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="etf-lab", description="Interactive ETF replication research terminal")
+    parser = argparse.ArgumentParser(
+        prog="etf-lab",
+        description="Interactive ETF replication research terminal",
+        epilog=f"example:\n  {SHELL_EXAMPLE}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command")
-    run = subparsers.add_parser("run", help="Run one reproducible experiment")
+    run = subparsers.add_parser(
+        "run",
+        help="Run one reproducible experiment",
+        description="Run one reproducible ETF replication experiment.",
+        epilog=f"example:\n  {SHELL_EXAMPLE}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     run.add_argument("--target", default="PSP")
     run.add_argument("--assets", nargs="+", default=list(DEFAULT_ASSETS))
     defaults = ResearchConfig()
