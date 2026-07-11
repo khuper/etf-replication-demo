@@ -1,6 +1,6 @@
 # Synthetic ETF Replicator
 
-![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![CVXPY](https://img.shields.io/badge/CVXPY-convex%20optimization-8B0000.svg)
 ![Status](https://img.shields.io/badge/status-learning%20project-lightgrey.svg)
@@ -14,7 +14,7 @@ The current default target is `PSP`, using a basket of liquid ETFs as proxies. R
 Launch the interactive terminal:
 
 ```bash
-python -m src
+etf-lab
 ```
 
 The terminal keeps an experiment configuration in memory and accepts short commands:
@@ -34,7 +34,7 @@ Each run displays out-of-sample metrics and the latest allocation, then exports 
 For scripts and repeatable experiments, use the one-shot interface:
 
 ```bash
-python -m src run \
+etf-lab run \
   --target PSP \
   --assets SPY QQQ VEA VWO BND LQD TIP GLD VNQ \
   --start 2020-01-01 \
@@ -81,13 +81,13 @@ git clone https://github.com/khuper/etf-replication-demo
 cd etf-replication-demo
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Run the research terminal:
 
 ```bash
-python -m src
+etf-lab
 ```
 
 Run the rolling correlation analysis:
