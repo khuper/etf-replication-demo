@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etf-replication-lab"
+version = "0.1.0"
+description = "A terminal playground for ETF replication experiments"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dynamic = ["dependencies"]
+
+[project.scripts]
+etf-lab = "src.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["src*"]

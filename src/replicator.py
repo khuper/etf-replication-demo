@@ -3,9 +3,48 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import List, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 import cvxpy as cp
 from datetime import datetime, timedelta
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    """Complete, out-of-sample output from a walk-forward experiment."""
+
+    weights: pd.DataFrame
+    returns: pd.DataFrame
+    turnover: pd.Series
+    metrics: dict[str, float]
+
+
+def _annualized_return(returns: pd.Series) -> float:
+    if returns.empty:
+        return float("nan")
+    return float((1 + returns).prod() ** (252 / len(returns)) - 1)
+
+
+def _max_drawdown(returns: pd.Series) -> float:
+    wealth = (1 + returns).cumprod()
+    return float((wealth / wealth.cummax() - 1).min())
+
+
+def calculate_metrics(returns: pd.DataFrame, turnover: pd.Series) -> dict[str, float]:
+    """Calculate the small set of metrics shown by the terminal report."""
+    replicator = returns["replicator"]
+    target = returns["target"]
+    active = replicator - target
+    return {
+        "tracking_error": float(active.std(ddof=1) * np.sqrt(252)),
+        "correlation": float(replicator.corr(target)),
+        "replicator_return": _annualized_return(replicator),
+        "target_return": _annualized_return(target),
+        "replicator_volatility": float(replicator.std(ddof=1) * np.sqrt(252)),
+        "max_drawdown": _max_drawdown(replicator),
+        "average_turnover": float(turnover.mean()),
+        "total_cost": float(returns["cost"].sum()),
+    }
 
 
 class SyntheticLiabilityReplicator:
@@ -17,12 +56,12 @@ class SyntheticLiabilityReplicator:
         self.data = None
         self.returns = None
         self.weights_history = None
+        self.backtest_result = None
 
     def fetch_data(self):
         """Fetches historical adjusted close prices for assets and target."""
         all_tickers = self.assets + [self.target]
-        print(f"Fetching data for: {', '.join(all_tickers)}")
-        df = yf.download(all_tickers, start=self.start_date, end=self.end_date, auto_adjust=True)
+        df = yf.download(all_tickers, start=self.start_date, end=self.end_date, auto_adjust=True, progress=False)
 
         if df.empty:
             raise ValueError("No data downloaded. Check your tickers and network connection.")
@@ -50,8 +89,8 @@ class SyntheticLiabilityReplicator:
         self,
         asset_returns: pd.DataFrame,
         target_returns: pd.Series,
-        cvar_constraint_ratio: float = 1.0,
-        w_prev: np.ndarray = None,
+        cvar_constraint_ratio: Optional[float] = 1.0,
+        w_prev: Optional[np.ndarray] = None,
         max_weight: float = 0.25,
         max_turnover: float = 0.20,
     ) -> pd.DataFrame:
@@ -59,23 +98,22 @@ class SyntheticLiabilityReplicator:
         Minimizes Tracking Error using CVXPY subject to a hard CVaR constraint,
         Position limits (max_weight), and Turnover constraints (max_turnover).
         """
-        R = asset_returns.values
-        R_target = target_returns.values
+        if asset_returns.empty or target_returns.empty:
+            raise ValueError("Optimization requires non-empty return history.")
+        if len(asset_returns) != len(target_returns):
+            raise ValueError("Asset and target returns must have the same length.")
+        if asset_returns.shape[1] * max_weight < 1 - 1e-9:
+            raise ValueError("The max-weight constraint is infeasible for this number of assets.")
+
+        R = asset_returns.to_numpy(dtype=float)
+        R_target = target_returns.to_numpy(dtype=float)
+        if not np.isfinite(R).all() or not np.isfinite(R_target).all():
+            raise ValueError("Optimization inputs contain missing or infinite values.")
         T, n_assets = R.shape
         alpha = 0.05
 
-        # 1. Calculate Target CVaR (historical)
-        k = int(alpha * T)
-        if k == 0:
-            k = 1
-        sorted_target = np.sort(R_target)
-        target_cvar = -np.mean(sorted_target[:k])
-        limit_cvar = target_cvar * cvar_constraint_ratio
-
         # 2. Setup CVXPY variables
         w = cp.Variable(n_assets)
-        v = cp.Variable()  # VaR
-        z = cp.Variable(T)  # Auxiliary variables for CVaR
 
         # 3. Objective: Minimize Sum of Squared Tracking Error
         tracking_error = R @ w - R_target
@@ -86,10 +124,23 @@ class SyntheticLiabilityReplicator:
             cp.sum(w) == 1,
             w >= 0,
             w <= max_weight,
-            z >= 0,
-            z >= -(R @ w) - v,
-            v + (1.0 / (T * alpha)) * cp.sum(z) <= limit_cvar,
         ]
+
+        if cvar_constraint_ratio is not None:
+            k = max(1, int(alpha * T))
+            # CVaR is a loss measure. A sample whose worst observations are all
+            # gains has zero observed loss, not a negative risk budget.
+            target_cvar = max(0.0, float(-np.mean(np.sort(R_target)[:k])))
+            limit_cvar = target_cvar * cvar_constraint_ratio
+            v = cp.Variable()
+            z = cp.Variable(T)
+            constraints.extend(
+                [
+                    z >= 0,
+                    z >= -(R @ w) - v,
+                    v + (1.0 / (T * alpha)) * cp.sum(z) <= limit_cvar,
+                ]
+            )
 
         # Turnover Constraint
         if w_prev is not None:
@@ -97,24 +148,103 @@ class SyntheticLiabilityReplicator:
 
         # 5. Solve
         prob = cp.Problem(objective, constraints)
-        try:
-            prob.solve()  # Let CVXPY choose the solver automatically
+        # Pin the solver so feasibility behavior is stable across environments.
+        # CLARABEL ships with CVXPY and handles both the quadratic objective and
+        # the optional CVaR/turnover cone constraints.
+        prob.solve(solver=cp.CLARABEL)
+        if prob.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or w.value is None:
+            raise RuntimeError(f"Optimization failed with status: {prob.status}")
 
-            if w.value is None:
-                # If constrained problem fails, fallback to unconstrained TE minimization (with pos/turnover limits)
-                print("CVaR Constrained Optimization failed, falling back to unconstrained TE minimization.")
-                fallback_constraints = [cp.sum(w) == 1, w >= 0, w <= max_weight]
-                if w_prev is not None:
-                    fallback_constraints.append(cp.norm(w - w_prev, 1) <= max_turnover)
-                prob_unconstrained = cp.Problem(objective, fallback_constraints)
-                prob_unconstrained.solve()
+        w_val = np.asarray(w.value, dtype=float).reshape(-1)
+        tolerance = 1e-5
+        if not np.isfinite(w_val).all():
+            raise RuntimeError("Optimizer returned non-finite weights.")
+        if abs(w_val.sum() - 1) > tolerance:
+            raise RuntimeError("Optimizer returned weights that do not sum to one.")
+        if w_val.min() < -tolerance or w_val.max() > max_weight + tolerance:
+            raise RuntimeError(
+                "Optimizer returned weights outside the requested bounds "
+                f"(min={w_val.min():.8f}, max={w_val.max():.8f})."
+            )
+        if w_prev is not None and np.abs(w_val - w_prev).sum() > max_turnover + tolerance:
+            raise RuntimeError("Optimizer returned weights outside the turnover constraint.")
+        w_val[np.abs(w_val) < 1e-10] = 0.0
+        return pd.DataFrame(w_val, index=asset_returns.columns, columns=["weights"])
 
-            w_val = np.where(w.value < 1e-4, 0.0, w.value)
-            w_val /= w_val.sum()
-            return pd.DataFrame(w_val, index=asset_returns.columns, columns=["weights"])
-        except Exception as e:
-            print(f"CVXPY Optimization Exception: {e}")
-            return None
+    def run_backtest(
+        self,
+        initial_train_size: int = 504,
+        step: int = 126,
+        max_weight: float = 0.25,
+        max_turnover: float = 0.20,
+        transaction_cost_bps: float = 5.0,
+        cvar_constraint_ratio: Optional[float] = None,
+    ) -> BacktestResult:
+        """Run a genuine walk-forward simulation with drifting holdings and costs."""
+        if self.returns is None:
+            raise ValueError("Fetch or assign return data before running a backtest.")
+        if len(self.returns) <= initial_train_size:
+            raise ValueError(
+                f"Need more than {initial_train_size} observations; only {len(self.returns)} are available."
+            )
+        if step < 1:
+            raise ValueError("Rebalance step must be positive.")
+        if transaction_cost_bps < 0:
+            raise ValueError("Transaction costs cannot be negative.")
+
+        weights_records = []
+        turnover_records = []
+        return_records = []
+        drifted_weights = None
+
+        for i in range(initial_train_size, len(self.returns), step):
+            asset_train, target_train = self.get_asset_target_split(self.returns.iloc[:i])
+            optimized = self.optimize_tracking_error(
+                asset_train,
+                target_train,
+                cvar_constraint_ratio=cvar_constraint_ratio,
+                w_prev=drifted_weights,
+                max_weight=max_weight,
+                max_turnover=max_turnover,
+            )["weights"].to_numpy()
+
+            rebalance_date = self.returns.index[i]
+            one_way_turnover = 1.0 if drifted_weights is None else float(np.abs(optimized - drifted_weights).sum() / 2)
+            weights_records.append(pd.Series(optimized, index=self.assets, name=rebalance_date))
+            turnover_records.append((rebalance_date, one_way_turnover))
+
+            current_weights = optimized.copy()
+            period = self.returns.iloc[i : min(i + step, len(self.returns))]
+            rebalance_cost = one_way_turnover * transaction_cost_bps / 10_000
+            for day_number, (day, row) in enumerate(period.iterrows()):
+                asset_day = row[self.assets].to_numpy(dtype=float)
+                gross_return = float(current_weights @ asset_day)
+                cost = rebalance_cost if day_number == 0 else 0.0
+                net_return = gross_return - cost
+                target_return = float(row[self.target])
+                return_records.append(
+                    {
+                        "date": day,
+                        "replicator": net_return,
+                        "target": target_return,
+                        "active": net_return - target_return,
+                        "cost": cost,
+                    }
+                )
+                denominator = 1 + gross_return
+                if denominator <= 0:
+                    raise RuntimeError(f"Portfolio value became non-positive on {day}.")
+                current_weights = current_weights * (1 + asset_day) / denominator
+            drifted_weights = current_weights
+
+        weights = pd.DataFrame(weights_records)
+        returns = pd.DataFrame(return_records).set_index("date")
+        turnover = pd.Series(dict(turnover_records), dtype=float)
+        turnover.index.name = "rebalance_date"
+        result = BacktestResult(weights, returns, turnover, calculate_metrics(returns, turnover))
+        self.weights_history = weights
+        self.backtest_result = result
+        return result
 
     def backtest_expanding_window(
         self, initial_train_size: int = 504, step: int = 126, max_weight: float = 0.25, max_turnover: float = 0.20
@@ -123,48 +253,14 @@ class SyntheticLiabilityReplicator:
         Backtests the strategy using an expanding window to avoid look-ahead bias.
         Incorporates turnover constraints and calculates weight drift between periods.
         """
-        print(f"Starting expanding window backtest (initial={initial_train_size}, step={step})...")
-        print(f"Constraints: Max Single Asset Weight={max_weight*100}%, Max Turnover={max_turnover*100}%")
-        results_weights = []
-        dates = []
-
-        w_prev = None
-        last_i = None
-        n_obs = len(self.returns)
-
-        for i in range(initial_train_size, n_obs, step):
-            train_returns = self.returns.iloc[:i]
-            asset_train, target_train = self.get_asset_target_split(train_returns)
-
-            # Calculate drifted weights if w_prev exists
-            if w_prev is not None and last_i is not None:
-                period_asset_returns = self.returns.iloc[last_i:i][self.assets]
-                compounded_returns = (1 + period_asset_returns).prod() - 1
-                drifted = w_prev * (1 + compounded_returns.values)
-                w_prev_drifted = drifted / drifted.sum()
-            else:
-                w_prev_drifted = None
-
-            try:
-                w_df = self.optimize_tracking_error(
-                    asset_train, target_train, w_prev=w_prev_drifted, max_weight=max_weight, max_turnover=max_turnover
-                )
-
-                if w_df is not None:
-                    w_prev = w_df["weights"].values
-                    last_i = i
-                    results_weights.append(w_df.T)
-                    dates.append(self.returns.index[i])
-                    print(f"Processed date: {self.returns.index[i].date()}")
-                else:
-                    print(f"Optimization returned None at {self.returns.index[i].date()}")
-            except Exception as e:
-                print(f"Optimization failed at {self.returns.index[i].date()}: {e}")
-
-        if results_weights:
-            self.weights_history = pd.concat(results_weights)
-            self.weights_history.index = dates
-        return self.weights_history
+        result = self.run_backtest(
+            initial_train_size=initial_train_size,
+            step=step,
+            max_weight=max_weight,
+            max_turnover=max_turnover,
+            transaction_cost_bps=0,
+        )
+        return result.weights
 
     def stress_test(self, weights: pd.Series, shock: float = -0.20):
         """

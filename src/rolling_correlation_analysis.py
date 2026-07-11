@@ -32,7 +32,7 @@ def main():
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     print(f"Fetching daily adjusted prices from {start_date} to {end_date}...")
-    df = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True)
+    df = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)
 
     if df.empty:
         raise ValueError("No data downloaded.")
