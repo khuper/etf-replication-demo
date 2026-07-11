@@ -68,7 +68,7 @@ def render_result(console: Console, result: BacktestResult) -> None:
 
 def export_result(config: ResearchConfig, result: BacktestResult, output_dir: str | None = None) -> Path:
     root = Path(output_dir or config.output_dir)
-    run_name = f"{config.target.lower()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    run_name = f"{config.target.lower()}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     run_dir = root / run_name
     run_dir.mkdir(parents=True, exist_ok=False)
 

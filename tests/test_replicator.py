@@ -74,6 +74,40 @@ class SyntheticLiabilityReplicatorTests(unittest.TestCase):
         self.assertTrue((weights["weights"] >= 0).all())
         self.assertTrue((weights["weights"] <= 0.60 + 1e-6).all())
 
+    def test_optimize_tracking_error_rejects_infeasible_position_cap(self):
+        replicator = SyntheticLiabilityReplicator(["AAA", "BBB"], "TARGET", "2024-01-01", "2024-01-10")
+        asset_returns = pd.DataFrame({"AAA": [0.01, 0.02], "BBB": [0.02, 0.01]})
+        target_returns = pd.Series([0.015, 0.015], name="TARGET")
+
+        with self.assertRaisesRegex(ValueError, "infeasible"):
+            replicator.optimize_tracking_error(asset_returns, target_returns, max_weight=0.40)
+
+    def test_walk_forward_covers_final_period_and_charges_costs(self):
+        dates = pd.date_range("2024-01-01", periods=8, freq="D")
+        replicator = SyntheticLiabilityReplicator(["AAA", "BBB"], "TARGET", "2024-01-01", "2024-01-10")
+        replicator.returns = pd.DataFrame(
+            {
+                "AAA": [0.01, -0.01, 0.02, 0.00, 0.01, 0.02, -0.01, 0.01],
+                "BBB": [0.00, 0.01, 0.01, -0.01, 0.02, 0.00, 0.01, -0.01],
+                "TARGET": [0.01, 0.00, 0.02, -0.01, 0.01, 0.01, 0.00, 0.01],
+            },
+            index=dates,
+        )
+        fixed_weights = pd.DataFrame({"weights": [0.5, 0.5]}, index=["AAA", "BBB"])
+
+        with patch.object(replicator, "optimize_tracking_error", return_value=fixed_weights):
+            result = replicator.run_backtest(
+                initial_train_size=4,
+                step=3,
+                max_weight=0.60,
+                transaction_cost_bps=10,
+            )
+
+        self.assertEqual(list(result.returns.index), list(dates[4:]))
+        self.assertEqual(result.weights.shape, (2, 2))
+        self.assertGreater(result.returns["cost"].sum(), 0)
+        self.assertTrue(np.allclose(result.returns["active"], result.returns["replicator"] - result.returns["target"]))
+
     def test_stress_test_uses_portfolio_beta_against_target(self):
         dates = pd.date_range("2024-01-01", periods=5, freq="D")
         replicator = SyntheticLiabilityReplicator(["AAA", "BBB"], "TARGET", "2024-01-01", "2024-01-10")

@@ -82,14 +82,14 @@ HELP = """\
   [bold]set max-weight[/] PERCENT       Set position cap (for example 25)
   [bold]set turnover[/] PERCENT         Set max L1 turnover (for example 20)
   [bold]set costs[/] BPS                Set estimated trading costs
-  [bold green]run[/]                          Run and export the experiment
-  [bold]help[/]                         Show this guide
-  [bold]quit[/]                         Leave the lab
+  [bold green]/run[/]                         Run and export the experiment
+  [bold]/help[/]                        Show this guide
+  [bold]/quit[/]                        Leave the lab
 """
 
 
 def _updated_config(config: ResearchConfig, tokens: list[str]) -> ResearchConfig:
-    command = tokens[0].lower()
+    command = tokens[0].lower().lstrip("/")
     if command == "target" and len(tokens) == 2:
         return replace(config, target=tokens[1])
     if command == "assets" and len(tokens) >= 3:
@@ -116,7 +116,7 @@ def _updated_config(config: ResearchConfig, tokens: list[str]) -> ResearchConfig
 def interactive() -> int:
     config = ResearchConfig()
     console.print(banner())
-    console.print("Type [bold]help[/] for commands, or [bold green]run[/] to start with the defaults.\n")
+    console.print("Type [bold]/help[/] for commands, or [bold green]/run[/] to start with the defaults.\n")
     show_config(config)
     while True:
         try:
@@ -124,7 +124,7 @@ def interactive() -> int:
             if not raw:
                 continue
             tokens = shlex.split(raw)
-            command = tokens[0].lower()
+            command = tokens[0].lower().lstrip("/")
             if command in {"quit", "exit", "q"}:
                 console.print("[dim]Research session closed.[/]")
                 return 0

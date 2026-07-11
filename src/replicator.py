@@ -61,8 +61,7 @@ class SyntheticLiabilityReplicator:
     def fetch_data(self):
         """Fetches historical adjusted close prices for assets and target."""
         all_tickers = self.assets + [self.target]
-        print(f"Fetching data for: {', '.join(all_tickers)}")
-        df = yf.download(all_tickers, start=self.start_date, end=self.end_date, auto_adjust=True)
+        df = yf.download(all_tickers, start=self.start_date, end=self.end_date, auto_adjust=True, progress=False)
 
         if df.empty:
             raise ValueError("No data downloaded. Check your tickers and network connection.")
@@ -129,7 +128,9 @@ class SyntheticLiabilityReplicator:
 
         if cvar_constraint_ratio is not None:
             k = max(1, int(alpha * T))
-            target_cvar = -np.mean(np.sort(R_target)[:k])
+            # CVaR is a loss measure. A sample whose worst observations are all
+            # gains has zero observed loss, not a negative risk budget.
+            target_cvar = max(0.0, float(-np.mean(np.sort(R_target)[:k])))
             limit_cvar = target_cvar * cvar_constraint_ratio
             v = cp.Variable()
             z = cp.Variable(T)
@@ -147,7 +148,10 @@ class SyntheticLiabilityReplicator:
 
         # 5. Solve
         prob = cp.Problem(objective, constraints)
-        prob.solve()
+        # Pin the solver so feasibility behavior is stable across environments.
+        # CLARABEL ships with CVXPY and handles both the quadratic objective and
+        # the optional CVaR/turnover cone constraints.
+        prob.solve(solver=cp.CLARABEL)
         if prob.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or w.value is None:
             raise RuntimeError(f"Optimization failed with status: {prob.status}")
 
@@ -158,7 +162,10 @@ class SyntheticLiabilityReplicator:
         if abs(w_val.sum() - 1) > tolerance:
             raise RuntimeError("Optimizer returned weights that do not sum to one.")
         if w_val.min() < -tolerance or w_val.max() > max_weight + tolerance:
-            raise RuntimeError("Optimizer returned weights outside the requested bounds.")
+            raise RuntimeError(
+                "Optimizer returned weights outside the requested bounds "
+                f"(min={w_val.min():.8f}, max={w_val.max():.8f})."
+            )
         if w_prev is not None and np.abs(w_val - w_prev).sum() > max_turnover + tolerance:
             raise RuntimeError("Optimizer returned weights outside the turnover constraint.")
         w_val[np.abs(w_val) < 1e-10] = 0.0
