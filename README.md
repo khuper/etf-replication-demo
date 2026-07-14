@@ -1,32 +1,74 @@
 # Synthetic ETF Replicator
 
-![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![CVXPY](https://img.shields.io/badge/CVXPY-convex%20optimization-8B0000.svg)
 ![Status](https://img.shields.io/badge/status-research%20demo-lightgrey.svg)
 
-Build a **liquid ETF basket that tracks an illiquid target** as closely as possible, and get a
-committee-ready answer to the question that actually matters: *how well does it track, out of
-sample, net of costs?*
+This repository is a terminal playground for testing whether a basket of ETFs can replicate a target. It pulls market data with `yfinance`, estimates weights with constrained optimization, and evaluates them in a walk-forward simulation with weight drift and transaction costs.
 
-The package downloads market data with `yfinance`, solves a constrained tracking-error
-optimization with CVXPY, runs an expanding-window backtest with transaction costs, and renders a
-self-contained **HTML tearsheet** with headline metrics, consistency evidence, stress-window
-behavior, and cost sensitivity. The default target is `PSP` (a comparatively illiquid
-private-equity ETF) replicated with a basket of ten liquid ETFs.
+The current default target is `PSP`, using a basket of liquid ETFs as proxies. Replication is a research problem here—not a claim that the synthetic basket is a useful trading strategy. The interesting question is whether replication works under explicit constraints and whether it beats simple alternatives after costs.
 
-![Example tearsheet](assets/tearsheet_preview.png)
+There are two front-ends over the same research question:
 
-## Install
+- **`etf-lab`** — an interactive research terminal for iterating on experiments, with reproducible run artifacts
+- **`etf-replicate`** — a one-shot batch run that renders a committee-ready HTML tearsheet, with instrument-type group constraints and stress-window evidence
+
+## Quickstart
 
 ```bash
 git clone https://github.com/khuper/etf-replication-demo
 cd etf-replication-demo
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv venv
+source venv/bin/activate   # On Windows: venv\Scripts\activate
 pip install -e .
 ```
 
-## Quickstart
+## Research terminal
+
+Launch the interactive terminal:
+
+```bash
+etf-lab
+```
+
+The terminal keeps an experiment configuration in memory and accepts short commands:
+
+```text
+target PSP
+assets SPY QQQ VEA VWO BND LQD TIP GLD VNQ
+dates 2020-01-01 2026-01-01
+set rebalance 63
+set costs 5
+set model tracking
+/run
+```
+
+Each run displays out-of-sample metrics and the latest allocation, then exports its exact configuration, metrics, returns, weights, and turnover history.
+
+For scripts and repeatable experiments, use the one-shot interface:
+
+```bash
+etf-lab run \
+  --target PSP \
+  --assets SPY QQQ VEA VWO BND LQD TIP GLD VNQ \
+  --start 2020-01-01 \
+  --end 2026-01-01 \
+  --rebalance-days 63 \
+  --costs-bps 5
+```
+
+Terminal runs create a timestamped directory under `outputs/` containing:
+
+- `config.json`
+- `metrics.json`
+- `returns.csv`
+- `weights.csv`
+- `turnover.csv`
+
+The terminal and one-shot command expose the main research inputs without source edits: asset tickers, target ticker, start and end dates, `max_weight`, `max_turnover`, `initial_train_size`, rebalance frequency, model (`tracking` or `cvar`), and transaction costs.
+
+## Strategy tearsheet
 
 ```bash
 # Replicate PSP with the default liquid basket (10 years of history)
@@ -36,7 +78,9 @@ etf-replicate
 etf-correlations
 ```
 
-Everything is written to `outputs/`:
+![Example tearsheet](assets/tearsheet_preview.png)
+
+`etf-replicate` writes everything to `outputs/`:
 
 | File | What it is |
 | --- | --- |
@@ -46,7 +90,15 @@ Everything is written to `outputs/`:
 | `full_sample_weights.csv` | "Ideal today" allocation using all history |
 | `*.png` | Every chart individually (cumulative returns, drawdown, rolling tracking, allocation, correlations) |
 
-## Configure it from the command line
+The tearsheet reports what a strategy reviewer would ask for:
+
+- **Headline tiles** — annualized tracking error, correlation, information ratio, active return,
+  max active drawdown, average turnover, total cost drag (all net of costs)
+- **Consistency** — monthly active-return grid with a hit rate (share of months tracking within
+  ±50 bps), best/worst months
+- **Stress windows** — replication quality inside the COVID crash and the 2022 rate shock
+- **Cost sensitivity** — the same headline metrics at 0 / 10 / 25 bps, so results aren't an
+  artifact of the cost assumption
 
 All parameters are flags — no code edits needed:
 
@@ -81,37 +133,29 @@ etf-replicate --assets SPY QQQ DBC GLD BND --asset-class DBC=commodity --group-b
 Infeasible combinations (e.g. group minimums that sum past 100%) are rejected with a clear error
 before any optimization runs.
 
-## Method
+## Method at a glance
 
 ```text
 yfinance prices
   -> daily returns
-  -> CVXPY: min Σ (basket return − target return)²
-       s.t. fully invested, long-only
-            per-position cap
-            portfolio CVaR ≤ ratio × target CVaR
-            L1 turnover cap per rebalance
-            instrument-type group bounds
-  -> expanding-window backtest (rebalance every `step` days, costs on turnover)
-  -> metrics + tearsheet
+  -> constrained optimization using prior data only
+  -> walk-forward holdings with drift and trading costs
+  -> metrics, allocations, and reproducible run artifacts
 ```
 
-The backtest avoids look-ahead bias: each rebalance is optimized only on data available at that
-date, and returns are measured strictly after it. Turnover is computed against drift-adjusted
-previous weights, transaction costs (`--cost-bps` per unit of L1 turnover) are charged on each
-rebalance day, and the first rebalance pays for a full deployment from cash.
+The default optimization in `src/replicator.py` focuses on:
 
-The tearsheet reports what a strategy reviewer would ask for:
+- minimizing squared tracking error versus the target
+- enforcing long-only weights
+- capping single-position concentration
+- limiting turnover between rebalance steps
 
-- **Headline tiles** — annualized tracking error, correlation, information ratio, active return,
-  max active drawdown, average turnover, total cost drag (all net of costs)
-- **Consistency** — monthly active-return grid with a hit rate (share of months tracking within
-  ±50 bps), best/worst months
-- **Stress windows** — replication quality inside the COVID crash and the 2022 rate shock
-- **Cost sensitivity** — the same headline metrics at 0 / 10 / 25 bps, so results aren't an
-  artifact of the cost assumption
+The CVaR constraint remains available as an optional model (`set model cvar` or `--model cvar`) so its effect can be compared with plain tracking-error minimization instead of being silently imposed.
 
-![Cumulative returns](assets/cumulative_returns.png)
+The `etf_replicator` package solves the same tracking-error problem with the CVaR constraint on by
+default (`--cvar-ratio`, α via `--cvar-alpha`) plus optional instrument-type group bounds, runs an
+expanding-window backtest that charges `--cost-bps` per unit of L1 turnover on each rebalance
+(the first rebalance pays for a full deployment from cash), and renders the tearsheet.
 
 ## Correlation diagnostics
 
@@ -133,20 +177,17 @@ result = run_expanding_backtest(returns, ["SPY", "QQQ", "GLD"], "PSP", cost_bps=
 print(summarize_backtest(result).round(4))
 ```
 
-## Project layout
+## What is in the repo
 
-| Module | Purpose |
+| File | Purpose |
 | --- | --- |
-| [`config.py`](src/etf_replicator/config.py) | Run configuration, instrument-type tags, group-bound validation |
-| [`data.py`](src/etf_replicator/data.py) | Market data download and return computation |
-| [`optimizer.py`](src/etf_replicator/optimizer.py) | CVaR/turnover/group-constrained tracking-error optimization |
-| [`backtest.py`](src/etf_replicator/backtest.py) | Expanding-window backtest with transaction costs |
-| [`metrics.py`](src/etf_replicator/metrics.py) | Tracking error, information ratio, drawdowns, consistency stats |
-| [`report.py`](src/etf_replicator/report.py) | Self-contained HTML tearsheet |
-| [`correlations.py`](src/etf_replicator/correlations.py) | Rolling correlation analysis across stress periods |
-| [`stress.py`](src/etf_replicator/stress.py) | Beta-based regime-shift stress test |
-| [`plotting.py`](src/etf_replicator/plotting.py) | All chart generation |
-| [`cli.py`](src/etf_replicator/cli.py) | `etf-replicate` and `etf-correlations` entry points |
+| [`src/replicator.py`](src/replicator.py) | Main workflow for data download, optimization, walk-forward backtest, stress testing, and plot generation. |
+| [`src/cli.py`](src/cli.py) | Interactive terminal and reproducible one-shot command. |
+| [`src/config.py`](src/config.py) | Validated experiment configuration. |
+| [`src/reporting.py`](src/reporting.py) | Rich terminal tables and run exports. |
+| [`src/rolling_correlation_analysis.py`](src/rolling_correlation_analysis.py) | Separate analysis script for rolling ETF-to-target correlations across normal and stress periods. |
+| [`etf_replicator/`](etf_replicator/) | Package behind `etf-replicate` / `etf-correlations`: config with instrument-type tags ([`config.py`](etf_replicator/config.py)), data ([`data.py`](etf_replicator/data.py)), CVaR/turnover/group-constrained optimizer ([`optimizer.py`](etf_replicator/optimizer.py)), backtest with costs ([`backtest.py`](etf_replicator/backtest.py)), metrics ([`metrics.py`](etf_replicator/metrics.py)), HTML tearsheet ([`report.py`](etf_replicator/report.py)), correlations ([`correlations.py`](etf_replicator/correlations.py)), stress test ([`stress.py`](etf_replicator/stress.py)), charts ([`plotting.py`](etf_replicator/plotting.py)), CLI ([`cli.py`](etf_replicator/cli.py)). |
+| [`assets/`](assets/) | Example tearsheet preview and charts embedded in this README. |
 
 ## Testing
 
@@ -155,18 +196,21 @@ python -m unittest discover -s tests -v
 ```
 
 The suite runs fully offline (market data is mocked, backtests use synthetic returns) and covers
-the optimizer constraints, backtest accounting, metrics, stress test, and tearsheet generation.
-CI runs it on every push and pull request.
+both the terminal workflow and the package: configuration validation, optimizer constraints,
+walk-forward accounting, metrics, stress test, and tearsheet generation. A GitHub Actions
+workflow runs it on pushes and pull requests.
 
 ## Limitations
 
 Still a research demo, not a production trading system:
 
 - market data comes from `yfinance`, which is convenient but not institutional-grade
-- transaction costs are a flat rate on turnover — no market impact or bid/ask spread modeling
+- transaction costs use a simple basis-point estimate; spread and market-impact models are not included
 - the beta stress test is intentionally simple (historical stress *windows* in the tearsheet are
   the more informative view)
-- weights are assumed to be held at the rebalance target between rebalances
+- there is no price-data cache yet
+- the project does not yet compare the optimized result with simple regression and equal-weight baselines
+- the `etf_replicator` backtest assumes weights are held at the rebalance target between rebalances
 
 ## License
 
