@@ -35,6 +35,20 @@ def test_last_digit_drift_is_tolerated():
     assert ok
 
 
+def test_a_rank_statistic_may_wobble_by_a_couple_of_points():
+    """PBO is a rank count over near-tied configurations; a different BLAS
+    re-orders a few ties. Printed as an integer percent, it gets integer slack."""
+    ok, _ = build_docs.tables_match(BLOCK, BLOCK.replace("**24%**", "**26%**"))
+    assert ok
+    ok, reason = build_docs.tables_match(BLOCK, BLOCK.replace("**24%**", "**31%**"))
+    assert not ok and "moved from 24 to 31" in reason
+
+
+def test_tolerance_scales_with_printed_precision():
+    ok, _ = build_docs.tables_match(BLOCK, BLOCK.replace("5.73%", "5.79%"))
+    assert not ok, "six units in the last printed digit is a real move"
+
+
 def test_a_material_numeric_change_fails():
     ok, reason = build_docs.tables_match(BLOCK, BLOCK.replace("5.73%", "6.50%"))
     assert not ok

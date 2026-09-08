@@ -197,11 +197,40 @@ def _standardised_t(rng: np.random.Generator, df: float, size: tuple[int, ...]) 
     return raw / np.sqrt(df / (df - 2.0))
 
 
+def _stationary_distribution(transition: np.ndarray, iterations: int = 2_000) -> np.ndarray:
+    """Stationary distribution of a small Markov chain by power iteration.
+
+    Written with explicit loops rather than ``np.linalg.eig`` on purpose: LAPACK
+    results differ in the last bit between machines, and this value feeds a
+    random draw. A generator whose output depends on which BLAS is installed is
+    not reproducible, whatever its seed says.
+    """
+    n_states = transition.shape[0]
+    pi = [1.0 / n_states] * n_states
+    for _ in range(iterations):
+        pi = [sum(pi[i] * float(transition[i, j]) for i in range(n_states)) for j in range(n_states)]
+    total = sum(pi)
+    return np.array([p / total for p in pi])
+
+
+def _accumulate(matrix: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """``matrix @ weights`` as a fixed-order elementwise sum, never a BLAS call.
+
+    ``@`` dispatches to whichever BLAS numpy was built against, and OpenBLAS,
+    MKL and Accelerate do not agree to the last bit. For a research generator
+    the last bit matters: it changes the data fingerprint, and with it every
+    downstream number, between a laptop and a CI runner. A few columns of
+    elementwise multiply-add are the same speed here and identical everywhere.
+    """
+    out = np.zeros(matrix.shape[0], dtype=float)
+    for k in range(matrix.shape[1]):
+        out += matrix[:, k] * float(weights[k])
+    return out
+
+
 def _simulate_regimes(rng: np.random.Generator, n: int) -> np.ndarray:
     """Sample a Markov regime path, starting from the chain's stationary state."""
-    eigvals, eigvecs = np.linalg.eig(TRANSITION.T)
-    stationary = np.real(eigvecs[:, np.argmin(np.abs(eigvals - 1.0))])
-    stationary = stationary / stationary.sum()
+    stationary = _stationary_distribution(TRANSITION)
     states = np.empty(n, dtype=np.int8)
     current = int(rng.choice(len(REGIME_NAMES), p=stationary))
     for t in range(n):
@@ -303,7 +332,9 @@ def generate_market(spec: SyntheticSpec) -> PricePanel:
     if loadings["ILLIQUIDITY"].abs().sum() > 0:
         raise AssertionError("ILLIQUIDITY must have zero loading on every candidate asset.")
 
-    systematic = factor_returns.to_numpy() @ loadings.to_numpy().T  # (n, n_assets)
+    factor_matrix = factor_returns.to_numpy(dtype=float)
+    loading_matrix = loadings.to_numpy(dtype=float)
+    systematic = np.column_stack([_accumulate(factor_matrix, loading_matrix[i]) for i in range(len(spec.assets))])
     idio_vol_daily = np.array([IDIO_VOL[a] for a in spec.assets]) / np.sqrt(TRADING_DAYS)
     idio = _standardised_t(idio_rng, spec.tail_df, (n, len(spec.assets))) * idio_vol_daily
     asset_returns = pd.DataFrame(systematic + idio, index=dates, columns=list(spec.assets))
@@ -314,7 +345,7 @@ def generate_market(spec: SyntheticSpec) -> PricePanel:
         raise ValueError("No ground-truth weights are defined for the requested asset list.")
     w_true = w_true / w_true.sum()  # renormalise if the caller used a subset
 
-    spanned = asset_returns.to_numpy() @ w_true.to_numpy()
+    spanned = _accumulate(asset_returns.to_numpy(dtype=float), w_true.to_numpy(dtype=float))
     unspanned_factor = factor_returns["ILLIQUIDITY"].to_numpy()
     target_idio = _standardised_t(target_rng, spec.tail_df, (n,)) * (spec.target_idio_vol / np.sqrt(TRADING_DAYS))
     unspanned = unspanned_factor + target_idio
