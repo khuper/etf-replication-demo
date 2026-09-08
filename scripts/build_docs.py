@@ -15,7 +15,8 @@ README that still quotes the old ones.
 from __future__ import annotations
 
 import argparse
-import shutil
+import difflib
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,13 @@ def build_table(study) -> str:
     return "\n".join(parts)
 
 
+def current_block(readme: Path) -> str:
+    text = readme.read_text()
+    if START not in text or END not in text:
+        raise SystemExit(f"{readme} is missing the {START} / {END} markers.")
+    return text.split(START, 1)[1].split(END, 1)[0].strip("\n")
+
+
 def rewrite_readme(table: str, readme: Path) -> bool:
     text = readme.read_text()
     if START not in text or END not in text:
@@ -103,6 +111,65 @@ def rewrite_readme(table: str, readme: Path) -> bool:
         return False
     readme.write_text(updated)
     return True
+
+
+_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?")
+_CODE = re.compile(r"`[^`]*`")
+
+
+def _skeleton_and_numbers(block: str) -> tuple[str, list[float]]:
+    """Split a block into its non-numeric skeleton and the numbers it quotes.
+
+    Numbers inside backticks (hashes, fingerprints, run ids) are part of the
+    skeleton -- they are identifiers, and an identifier that changed is stale.
+    """
+    numbers: list[float] = []
+    pieces: list[str] = []
+    cursor = 0
+    for code in _CODE.finditer(block):
+        pieces.append(
+            _NUMBER.sub(
+                lambda m: (numbers.append(float(m.group().replace(",", ""))), "#")[1], block[cursor : code.start()]
+            )
+        )
+        pieces.append(code.group())
+        cursor = code.end()
+    pieces.append(_NUMBER.sub(lambda m: (numbers.append(float(m.group().replace(",", ""))), "#")[1], block[cursor:]))
+    return "".join(pieces), numbers
+
+
+def tables_match(committed: str, generated: str, *, rel: float = 0.02, abs_tol: float = 0.02) -> tuple[bool, str]:
+    """Do two results blocks say the same thing?
+
+    The skeleton -- every word, every identifier, the strategy ordering, the
+    verdict's clauses -- must match exactly. A changed word means the conclusion
+    changed. The numbers may differ by a small tolerance, because an interior
+    point solver on a different CPU and BLAS legitimately lands a few ULPs away,
+    and a README that fails CI because 0.0830 became 0.0831 on another machine
+    is a check nobody keeps. A number that moves by more than the tolerance is a
+    real change and fails.
+    """
+    skeleton_a, numbers_a = _skeleton_and_numbers(committed)
+    skeleton_b, numbers_b = _skeleton_and_numbers(generated)
+    if skeleton_a != skeleton_b:
+        return False, "the wording, ordering or identifiers changed"
+    if len(numbers_a) != len(numbers_b):
+        return False, f"{len(numbers_a)} numbers committed, {len(numbers_b)} generated"
+    worst = 0.0
+    for a, b in zip(numbers_a, numbers_b, strict=True):
+        limit = max(abs_tol, rel * max(abs(a), abs(b)))
+        gap = abs(a - b)
+        worst = max(worst, gap)
+        if gap > limit:
+            return False, f"a number moved from {a:g} to {b:g} (tolerance {limit:g})"
+    return True, f"largest numeric deviation {worst:g}"
+
+
+def show_diff(committed: str, generated: str) -> None:
+    diff = difflib.unified_diff(
+        committed.splitlines(), generated.splitlines(), "README.md (committed)", "README.md (generated)", lineterm=""
+    )
+    print("\n".join(diff), file=sys.stderr)
 
 
 def main() -> int:
@@ -119,15 +186,15 @@ def main() -> int:
 
     figures_dir = ROOT / "docs" / "figures"
     if args.check:
-        staging = ROOT / ".docs-check"
-        shutil.rmtree(staging, ignore_errors=True)
-        make_figures(study, staging)
-        readme_changed = rewrite_readme(build_table(study), ROOT / "README.md")
-        shutil.rmtree(staging, ignore_errors=True)
-        if readme_changed:
-            print("README results table was out of date and has been rewritten.", file=sys.stderr)
+        committed = current_block(ROOT / "README.md")
+        generated = build_table(study)
+        ok, reason = tables_match(committed, generated)
+        if not ok:
+            print(f"README results table is stale: {reason}.", file=sys.stderr)
+            show_diff(committed, generated)
+            print("Run `make figures` and commit the result.", file=sys.stderr)
             return 1
-        print("Docs are up to date.")
+        print(f"Docs are up to date ({reason}).")
         return 0
 
     produced = make_figures(study, figures_dir)
