@@ -31,7 +31,10 @@ dependencies = [
 
 [project.optional-dependencies]
 live = ["yfinance>=0.2.40"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "pandas-stubs", "types-setuptools"]
+# pandas-stubs is deliberately absent: it types every pandas expression as a
+# wide union (Timestamp - str, float(Series | Any), ...) and produces ~200
+# unactionable errors in numeric research code. pandas is checked as Any.
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11"]
 
 [project.urls]
 Homepage = "https://github.com/khuper/etf-replication-demo"

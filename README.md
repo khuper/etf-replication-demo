@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-![Tests](https://img.shields.io/badge/tests-224-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-230-brightgreen.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 **Can a basket of liquid ETFs replicate a harder-to-access index — and does the optimisation actually earn its keep against a naive alternative?**
@@ -234,7 +234,7 @@ make figures        # regenerate docs/figures and the results table above
 make verify         # re-run the latest study and check the digest
 ```
 
-224 tests, no network required. The suite is structured around the claims rather than the modules: [`test_lookahead.py`](tests/test_lookahead.py) defends point-in-time correctness, [`test_reproducibility.py`](tests/test_reproducibility.py) defends run identity and determinism, [`test_inference.py`](tests/test_inference.py) validates the statistics by simulation, [`test_governance.py`](tests/test_governance.py) proves the kill switch trips when it should and never looks ahead, and [`test_backtest.py`](tests/test_backtest.py) pins the engine arithmetic against hand computations.
+230 tests, no network required. The suite is structured around the claims rather than the modules: [`test_lookahead.py`](tests/test_lookahead.py) defends point-in-time correctness, [`test_reproducibility.py`](tests/test_reproducibility.py) defends run identity and determinism, [`test_inference.py`](tests/test_inference.py) validates the statistics by simulation, [`test_governance.py`](tests/test_governance.py) proves the kill switch trips when it should and never looks ahead, and [`test_backtest.py`](tests/test_backtest.py) pins the engine arithmetic against hand computations.
 
 Further reading: [`docs/methodology.md`](docs/methodology.md) for the walk-forward protocol and the estimators, and [`docs/decisions.md`](docs/decisions.md) for the design choices and what was rejected.
 
