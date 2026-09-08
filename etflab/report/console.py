@@ -151,6 +151,13 @@ def diagnostics_panel(study: Any) -> Panel:
             f"over {len(study.sweep.frame)} configs",
         )
         table.add_row("Deflated Sharpe", f"{study.sweep.deflated.deflated_probability:.1%} probability of a real edge")
+    for report in (getattr(study, "governance", {}) or {}).values():
+        colour = "red" if report.ever_shut_off else "green"
+        table.add_row(
+            f"Kill switch vs {report.benchmark}",
+            f"[{colour}]{'shut off ' + format(report.days_off / max(len(report.daily), 1), '.0%') + ' of days' if report.ever_shut_off else 'never tripped'}[/] "
+            f"at a {report.policy.hurdle:g}x hurdle",
+        )
     if study.cost_breakeven is not None:
         value = study.cost_breakeven.breakeven
         table.add_row(

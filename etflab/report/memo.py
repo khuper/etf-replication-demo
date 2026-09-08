@@ -322,6 +322,56 @@ def build_memo(study: Any, manifest: Any) -> Memo:
     sections.append(Section("The horse race", race_blocks, "horse-race"))
 
     # ------------------------------------------------------------------ #
+    governance = getattr(study, "governance", {}) or {}
+    if governance:
+        policy = next(iter(governance.values())).policy
+        gov_blocks: list[Block] = [
+            Paragraph(
+                f"A model is allowed to run only while its realised, out-of-sample benefit covers its realised "
+                f"incremental cost at least **{policy.hurdle:g} times over**, measured on a trailing "
+                f"{policy.window}-day window. After {policy.grace} consecutive breaching days the book reverts to "
+                f"the comparison strategy"
+                + (" and may re-earn its place." if policy.reactivate else " and stays there.")
+                + " The switch is applied walk-forward, so the governed book is a strategy in its own right, "
+                "with its own tracking error and its own switching costs."
+            ),
+        ]
+        labels = {
+            "benchmark": "against the benchmark",
+            "simplest": "against the simplest indistinguishable strategy",
+            "static": "against optimise-once-and-hold",
+        }
+        for key, report in governance.items():
+            kind = "finding" if report.ever_shut_off else "method"
+            title = f"{report.strategy} {labels.get(key, key)} ({report.benchmark})"
+            if report.ever_shut_off:
+                title += f" -- shut off for {report.days_off / max(len(report.daily), 1):.0%} of the sample"
+            gov_blocks.append(Callout(kind, title, report.verdict))
+        if "static" in governance:
+            gov_blocks.append(
+                Figure("governance", "Rolling benefit versus the hurdle; shaded spans are where the switch was off.")
+            )
+            episodes = governance["static"].episodes
+            if not episodes.empty:
+                gov_blocks.append(
+                    Table(
+                        "Shut-off episodes (rebalancing versus optimise-once-and-hold)",
+                        episodes,
+                        formats={"days": "{:,.0f}"},
+                        index_label="start",
+                    )
+                )
+        gov_blocks.append(
+            Paragraph(
+                "Read the three together. The optimiser pays for itself against a naive basket trivially -- it "
+                "barely trades more. The question with teeth is whether the *ongoing rebalancing* pays for itself "
+                "against solving the problem once and holding, and the rule's answer to that is the one a "
+                "governance committee would actually act on."
+            )
+        )
+        sections.append(Section("Does it pay for itself?", gov_blocks, "governance"))
+
+    # ------------------------------------------------------------------ #
     if study.sweep is not None:
         sweep = study.sweep
         sections.append(

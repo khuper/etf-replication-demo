@@ -141,6 +141,15 @@ def run_backtest(
                 "train_end": train_assets.index[-1],
                 "max_weight_used": float(np.max(target_weights)),
                 "n_positions": int((target_weights > 1e-6).sum()),
+                # Constraint activity, so the report can say which constraints
+                # did anything rather than merely which were advertised.
+                "cap_binding_count": int(fit.detail.get("cap_binding_count", 0)),
+                "turnover_share_of_cap": float(fit.detail.get("turnover_share_of_cap", float("nan"))),
+                "turnover_binding": bool(fit.detail.get("turnover_binding", False)),
+                "cvar_binding": bool(fit.detail.get("cvar_binding", False)),
+                "cap_shadow_price": float(fit.detail.get("cap_shadow_price", float("nan"))),
+                "turnover_shadow_price": float(fit.detail.get("turnover_shadow_price", float("nan"))),
+                "cvar_shadow_price": float(fit.detail.get("cvar_shadow_price", float("nan"))),
             }
         )
 

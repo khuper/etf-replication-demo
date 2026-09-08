@@ -158,6 +158,48 @@ def rolling_correlation_stability(
 
 
 # --------------------------------------------------------------------------- #
+# Constraint activity
+# --------------------------------------------------------------------------- #
+def constraint_activity_summary(results: dict[str, BacktestResult]) -> pd.DataFrame:
+    """Per strategy: how often each advertised constraint actually bound.
+
+    A constraint that is stated in the write-up, plotted in the diagram and
+    never binds is not risk control, it is presentation. This table is how the
+    report tells the two apart. Shadow prices are the solver duals -- the
+    marginal objective improvement per unit of relaxation -- and are reported
+    only for strategies whose objective is a tracking error, where they have an
+    economic meaning.
+    """
+    rows = []
+    for name, result in results.items():
+        r = result.rebalances
+        n = len(r)
+        if n == 0 or "cap_binding_count" not in r:
+            continue
+        ongoing = r.iloc[1:] if n > 1 else r.iloc[:0]
+        rows.append(
+            {
+                "strategy": name,
+                "rebalances": n,
+                "cap_binds_share": float((r["cap_binding_count"] > 0).mean()),
+                "cap_assets_at_limit_mean": float(r["cap_binding_count"].mean()),
+                "turnover_binds_share": float(ongoing["turnover_binding"].mean()) if len(ongoing) else float("nan"),
+                "turnover_used_share_of_cap": float(ongoing["turnover_share_of_cap"].mean())
+                if len(ongoing)
+                else float("nan"),
+                "cvar_binds_share": float(r["cvar_binding"].mean()) if "cvar_binding" in r else float("nan"),
+                "cap_shadow_price_max": float(r["cap_shadow_price"].max())
+                if r["cap_shadow_price"].notna().any()
+                else float("nan"),
+                "turnover_shadow_price_max": float(r["turnover_shadow_price"].max())
+                if r["turnover_shadow_price"].notna().any()
+                else float("nan"),
+            }
+        )
+    return pd.DataFrame(rows).set_index("strategy") if rows else pd.DataFrame()
+
+
+# --------------------------------------------------------------------------- #
 # Cost and capacity break-evens
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)

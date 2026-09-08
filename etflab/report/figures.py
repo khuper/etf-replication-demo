@@ -445,6 +445,51 @@ def figure_regimes(study: Any, directory: Path) -> Path:
     return _save(fig, directory, "regimes")
 
 
+def figure_governance(study: Any, directory: Path) -> Path:
+    """Rolling benefit against the hurdle, with shut-off spans shaded.
+
+    Plotted as benefit versus ``hurdle x cost`` rather than as a ratio: the ratio
+    is undefined wherever the strategy is not dearer than the comparison, and a
+    line with holes in it reads as missing data rather than as "nothing to pay".
+    """
+    governance = getattr(study, "governance", {}) or {}
+    report = governance.get("static") or governance.get("simplest") or governance.get("benchmark")
+    if report is None:
+        raise ValueError("No governance report to plot.")
+    daily = report.daily.dropna(subset=["benefit_bp"])
+
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    hurdle_line = (daily["cost_bp"].clip(lower=0.0) * report.policy.hurdle).rename("hurdle")
+    ax.plot(daily.index, daily["benefit_bp"], color=SERIES[0], label="realised benefit (bp of tracking error)")
+    ax.plot(daily.index, hurdle_line, color=SERIES[1], label=f"{report.policy.hurdle:g} x incremental cost (bp)")
+    ax.axhline(0.0, color=INK_SOFT, linewidth=1.0)
+
+    off = ~daily["active"]
+    if off.any():
+        # Shade each contiguous shut-off span.
+        blocks = (off != off.shift()).cumsum()
+        for _, span in daily[off].groupby(blocks[off]):
+            ax.axvspan(span.index[0], span.index[-1], color=SERIES[7], alpha=0.10, linewidth=0)
+        ax.annotate(
+            "shaded: switch off, book on " + report.benchmark,
+            xy=(0.99, 0.04),
+            xycoords="axes fraction",
+            ha="right",
+            fontsize=8.5,
+            color=SERIES[7],
+        )
+
+    ax.set_title(
+        f"Kill switch: {report.strategy} versus {report.benchmark} at a {report.policy.hurdle:g}x hurdle",
+        loc="left",
+        pad=12,
+    )
+    ax.set_ylabel("basis points, annualised")
+    ax.legend(loc="upper left")
+    _style_axes(ax)
+    return _save(fig, directory, "governance")
+
+
 FIGURES = {
     "cumulative_returns": figure_cumulative,
     "rolling_tracking_error": figure_rolling_te,
@@ -454,6 +499,7 @@ FIGURES = {
     "recovery": figure_recovery,
     "capacity": figure_capacity,
     "overfitting": figure_pbo,
+    "governance": figure_governance,
 }
 
 

@@ -178,11 +178,73 @@ def ledoit_wolf_shrinkage(returns: np.ndarray) -> tuple[np.ndarray, float]:
     return intensity * target + (1.0 - intensity) * sample, intensity
 
 
-def _base_constraints(w: cp.Variable, ctx: FitContext) -> list[cp.Constraint]:
-    cons: list[cp.Constraint] = [cp.sum(w) == 1, w >= 0, w <= ctx.constraints.max_weight]
+def _named_constraints(w: cp.Variable, ctx: FitContext) -> dict[str, cp.Constraint]:
+    """The feasible set, with each constraint named so its activity can be read back.
+
+    Note the turnover convention: the cap bounds the L1 distance ``sum |dw|``,
+    which is *two-way* turnover (traded notional). A cap of 0.20 therefore
+    allows 10% one-way turnover per rebalance. Stated here once because it is
+    the single easiest number in this repository to misread.
+    """
+    cons: dict[str, cp.Constraint] = {
+        "budget": cp.sum(w) == 1,
+        "long_only": w >= 0,
+        "position_cap": w <= ctx.constraints.max_weight,
+    }
     if ctx.prev_weights is not None and ctx.constraints.max_turnover is not None:
-        cons.append(cp.norm(w - ctx.prev_weights, 1) <= ctx.constraints.max_turnover)
+        cons["turnover_cap"] = cp.norm(w - ctx.prev_weights, 1) <= ctx.constraints.max_turnover
     return cons
+
+
+def _base_constraints(w: cp.Variable, ctx: FitContext) -> list[cp.Constraint]:
+    return list(_named_constraints(w, ctx).values())
+
+
+_BIND_TOL = 1e-4  # a weight within 1bp of its cap is at the cap; solver noise must not hide a binding constraint
+
+
+def constraint_activity(
+    w: np.ndarray, ctx: FitContext, named: dict[str, cp.Constraint] | None = None
+) -> dict[str, Any]:
+    """Which constraints bind at this solution, and what relaxing them is worth.
+
+    Binding is decided geometrically from the weights, so it is defined for every
+    strategy including the projected heuristics. Shadow prices come from solver
+    duals where a solve happened: the marginal reduction in the objective per
+    unit of constraint relaxation, in the objective's own units. A constraint
+    that never binds and carries a zero shadow price is decoration, and the
+    report says so.
+    """
+    cap = ctx.constraints.max_weight
+    activity: dict[str, Any] = {
+        "cap_binding_count": int((w >= cap - _BIND_TOL).sum()),
+        "long_only_binding_count": int((w <= _BIND_TOL).sum()),
+    }
+    if ctx.prev_weights is not None and ctx.constraints.max_turnover is not None:
+        used = float(np.abs(w - ctx.prev_weights).sum())
+        activity["turnover_used"] = used
+        activity["turnover_share_of_cap"] = (
+            used / ctx.constraints.max_turnover if ctx.constraints.max_turnover > 0 else float("nan")
+        )
+        activity["turnover_binding"] = bool(used >= ctx.constraints.max_turnover - _BIND_TOL)
+    else:
+        activity["turnover_used"] = float("nan")
+        activity["turnover_share_of_cap"] = float("nan")
+        activity["turnover_binding"] = False
+
+    if named:
+
+        def _dual(name: str) -> float:
+            constraint = named.get(name)
+            if constraint is None or constraint.dual_value is None:
+                return float("nan")
+            value = np.asarray(constraint.dual_value, dtype=float)
+            return float(np.max(np.abs(value))) if value.size else float("nan")
+
+        activity["cap_shadow_price"] = _dual("position_cap")
+        activity["turnover_shadow_price"] = _dual("turnover_cap")
+        activity["cvar_shadow_price"] = _dual("cvar_budget")
+    return activity
 
 
 def _solve(problem: cp.Problem) -> tuple[str, str]:
@@ -216,7 +278,15 @@ def _fallback_weights(ctx: FitContext) -> np.ndarray:
     return np.full(n, 1.0 / n)
 
 
-def _finalise(raw: np.ndarray | None, ctx: FitContext, status: str, solver: str, objective: float, t0: float) -> Fit:
+def _finalise(
+    raw: np.ndarray | None,
+    ctx: FitContext,
+    status: str,
+    solver: str,
+    objective: float,
+    t0: float,
+    named: dict[str, cp.Constraint] | None = None,
+) -> Fit:
     """Validate, clean and package a solver result.
 
     The verification is not ceremonial. A solver that returns ``OPTIMAL`` with
@@ -255,7 +325,7 @@ def _finalise(raw: np.ndarray | None, ctx: FitContext, status: str, solver: str,
     if total <= 0:
         return Fit(_fallback_weights(ctx), "fallback_degenerate", solver, objective, elapsed)
     w = w / total  # removes clipping residue only; the check above already passed
-    return Fit(w, status, solver, objective, elapsed)
+    return Fit(w, status, solver, objective, elapsed, constraint_activity(w, ctx, named))
 
 
 def project_onto_feasible(desired: np.ndarray, ctx: FitContext) -> Fit:
@@ -268,11 +338,14 @@ def project_onto_feasible(desired: np.ndarray, ctx: FitContext) -> Fit:
     """
     t0 = time.perf_counter()
     w = cp.Variable(ctx.n_assets)
-    problem = cp.Problem(cp.Minimize(cp.sum_squares(w - desired)), _base_constraints(w, ctx))
+    named = _named_constraints(w, ctx)
+    problem = cp.Problem(cp.Minimize(cp.sum_squares(w - desired)), list(named.values()))
     status, solver = _solve(problem)
     if status not in {"optimal", "optimal_inaccurate"}:
         return Fit(_fallback_weights(ctx), f"fallback_{status}", solver, float("nan"), time.perf_counter() - t0)
-    return _finalise(w.value, ctx, status, solver, float(problem.value), t0)
+    # Duals of a projection objective are geometric, not economic; keep the
+    # binding flags and drop the shadow prices so they cannot be misread.
+    return _finalise(w.value, ctx, status, solver, float(problem.value), t0, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -302,25 +375,30 @@ class TrackingErrorStrategy:
 
         w = cp.Variable(ctx.n_assets)
         active = r_assets @ w - r_target
-        constraints = _base_constraints(w, ctx)
+        named = _named_constraints(w, ctx)
 
+        budget = float("nan")
         if self.cvar_ratio is not None:
             periods = r_assets.shape[0]
             alpha = self.cvar_alpha
             budget = max(0.0, sample_cvar(-r_target, alpha)) * self.cvar_ratio
             v = cp.Variable()
             z = cp.Variable(periods)
-            constraints += [
-                z >= 0,
-                z >= -(r_assets @ w) - v,
-                v + (1.0 / (periods * alpha)) * cp.sum(z) <= budget,
-            ]
+            named["cvar_aux_nonneg"] = z >= 0
+            named["cvar_aux_excess"] = z >= -(r_assets @ w) - v
+            named["cvar_budget"] = v + (1.0 / (periods * alpha)) * cp.sum(z) <= budget
 
-        problem = cp.Problem(cp.Minimize(cp.sum_squares(active)), constraints)
+        problem = cp.Problem(cp.Minimize(cp.sum_squares(active)), list(named.values()))
         status, solver = _solve(problem)
         if status not in {"optimal", "optimal_inaccurate"}:
             return Fit(_fallback_weights(ctx), f"fallback_{status}", solver, float("nan"), time.perf_counter() - t0)
-        return _finalise(w.value, ctx, status, solver, float(problem.value), t0)
+        fit = _finalise(w.value, ctx, status, solver, float(problem.value), t0, named)
+        if self.cvar_ratio is not None and not fit.degraded:
+            realised = sample_cvar(-(r_assets @ fit.weights), self.cvar_alpha)
+            fit.detail["cvar_budget"] = budget
+            fit.detail["cvar_realised"] = realised
+            fit.detail["cvar_binding"] = bool(realised >= budget - 1e-6)
+        return fit
 
 
 @dataclass(frozen=True)
@@ -345,11 +423,12 @@ class RidgeTrackingStrategy:
         w = cp.Variable(ctx.n_assets)
         periods = r_assets.shape[0]
         objective = cp.sum_squares(r_assets @ w - r_target) / periods + self.ridge_lambda * cp.sum_squares(w - anchor)
-        problem = cp.Problem(cp.Minimize(objective), _base_constraints(w, ctx))
+        named = _named_constraints(w, ctx)
+        problem = cp.Problem(cp.Minimize(objective), list(named.values()))
         status, solver = _solve(problem)
         if status not in {"optimal", "optimal_inaccurate"}:
             return Fit(_fallback_weights(ctx), f"fallback_{status}", solver, float("nan"), time.perf_counter() - t0)
-        return _finalise(w.value, ctx, status, solver, float(problem.value), t0)
+        return _finalise(w.value, ctx, status, solver, float(problem.value), t0, named)
 
 
 @dataclass(frozen=True)
@@ -373,12 +452,14 @@ class ShrunkCovarianceStrategy:
         sigma_at = sigma[:-1, -1]
         w = cp.Variable(ctx.n_assets)
         objective = cp.quad_form(w, cp.psd_wrap(sigma_aa)) - 2.0 * sigma_at @ w
-        problem = cp.Problem(cp.Minimize(objective), _base_constraints(w, ctx))
+        named = _named_constraints(w, ctx)
+        problem = cp.Problem(cp.Minimize(objective), list(named.values()))
         status, solver = _solve(problem)
         if status not in {"optimal", "optimal_inaccurate"}:
             return Fit(_fallback_weights(ctx), f"fallback_{status}", solver, float("nan"), time.perf_counter() - t0)
-        fit = _finalise(w.value, ctx, status, solver, float(problem.value), t0)
-        return Fit(fit.weights, fit.status, fit.solver, fit.objective, fit.solve_seconds, {"shrinkage": intensity})
+        fit = _finalise(w.value, ctx, status, solver, float(problem.value), t0, named)
+        fit.detail["shrinkage"] = intensity
+        return fit
 
 
 @dataclass(frozen=True)
@@ -399,15 +480,14 @@ class OLSProjectedStrategy:
         y = ctx.target_returns.to_numpy(dtype=float)
         beta, *_ = np.linalg.lstsq(x, y, rcond=None)
         fit = project_onto_feasible(beta, ctx)
-        repair = float(np.abs(fit.weights - beta).sum())
-        return Fit(
-            fit.weights,
-            fit.status,
-            fit.solver,
-            fit.objective,
-            fit.solve_seconds,
-            {"raw_sum": float(beta.sum()), "raw_min": float(beta.min()), "repair_l1": repair},
+        fit.detail.update(
+            {
+                "raw_sum": float(beta.sum()),
+                "raw_min": float(beta.min()),
+                "repair_l1": float(np.abs(fit.weights - beta).sum()),
+            }
         )
+        return fit
 
 
 @dataclass(frozen=True)

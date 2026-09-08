@@ -80,6 +80,8 @@ def export_study(
     _write_csv(study.worst_windows, run_dir / "worst_windows.csv", "window_end")
     _write_csv(study.correlation_stability, run_dir / "correlation_stability.csv", "asset")
     _write_csv(study.shock, run_dir / "beta_shock.csv", "target_shock")
+    if getattr(study, "constraints", None) is not None and not study.constraints.empty:
+        _write_csv(study.constraints, run_dir / "constraint_activity.csv", "strategy")
 
     for name, result in study.race.results.items():
         _write_csv(result.daily, run_dir / "ledger" / f"{name}_daily.csv", "date")
@@ -94,6 +96,10 @@ def export_study(
         _write_json(study.sweep.as_dict(), run_dir / "overfitting.json")
     if study.cost_curve is not None:
         _write_csv(study.cost_curve, run_dir / "capacity.csv", "notional")
+    for key, report in getattr(study, "governance", {}).items():
+        _write_csv(report.daily, run_dir / "governance" / f"{key}_signal.csv", "date")
+        _write_csv(report.governed, run_dir / "governance" / f"{key}_ledger.csv", "date")
+        _write_json(report.as_dict(), run_dir / "governance" / f"{key}.json")
     if study.cost_breakeven is not None:
         _write_json(
             {

@@ -85,6 +85,20 @@ On synthetic data the true replicating portfolio is known, so the estimator can 
 
 Weight error decays at roughly `T^-0.41` against a parametric rate of `T^-0.5`, while the out-of-sample excess tracking error collapses to a fraction of a basis point far sooner. That gap is the ill-conditioning of the problem made visible: collinear candidates leave the objective nearly flat in the directions that separate them, so a large weight error buys almost no extra tracking error. It is why weight stability and turnover get their own columns in the horse race.
 
+## Governance
+
+A strategy is allowed to run only while its realised benefit covers its realised incremental cost by the hurdle multiple (default 20×), both measured on a trailing window (default 252 days). Benefit is the trailing annualised tracking error of the comparison strategy minus the strategy's own, in basis points; cost is the trailing incremental cost drag, annualised. The ratio is defined only where the strategy is dearer than the comparison by at least a floor — cheaper-and-better is the easiest possible pass, not a breach.
+
+A breach is either a negative benefit at any cost, or a defined ratio below the hurdle. After `grace` consecutive breaching days (default 63) the switch trips, the book trades into the comparison strategy's drifted holdings — paying for that trade — and stays there until the strategy's *shadow* performance clears the hurdle for another `grace` days. The switch state on day `t` is decided from rows strictly before `t`, and `tests/test_governance.py` verifies that truncating the ledgers does not change any earlier governed row.
+
+The rule is evaluated against the benchmark, against the simplest strategy that is statistically indistinguishable from the winner, and against `static`. The last is the cleanest test of whether the rebalancing itself earns its keep: it is the same estimator with the trading turned off.
+
+## Constraint activity
+
+At every rebalance, each constraint is tested for whether it binds — geometrically from the weights, so it is defined for the projected heuristics too — and, where a solve happened, the solver's dual is read as the shadow price. The report summarises the share of rebalances in which each constraint bound and the mean share of the turnover budget used. Shadow prices are reported only for tracking-family strategies, where the objective is a tracking error and the dual has an economic meaning.
+
+The turnover convention is stated once and enforced: the cap bounds `Σ|Δw|`, which is two-way turnover, so a 0.20 cap permits 10% one-way turnover per rebalance.
+
 ## Metrics
 
 Everything is computed from the walk-forward ledger only; there is no in-sample metric anywhere in `etflab/metrics.py`. Definitions are exported with every run in `metric_definitions.json`, so no reader has to guess whether a figure was annualised or which sign convention a capture ratio uses.

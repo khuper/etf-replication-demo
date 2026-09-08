@@ -76,6 +76,20 @@ The choices worth arguing about, and what was rejected.
 
 **Why.** Exploratory work is genuinely iterative and the shell is good at it. It now shares the same config object and the same quality gates as every other entry point, so there is no path through it that produces an unreproducible number.
 
+## The kill switch is a strategy, not a footnote
+
+**Decision.** The governance rule is applied walk-forward to produce a governed ledger with its own tracking error and switching costs, rather than reported as a post-hoc statistic.
+
+**Why.** "Would a committee have shut this down?" is only answerable if the shutdown is simulated with the information available at the time, including what it cost to switch and what the reverted book then did. A rule that is scored with hindsight is a different, weaker rule.
+
+**Rejected.** Defining the payoff ratio as benefit over *total* cost. Benefit is measured against a comparison strategy, so cost must be too; a strategy that trades less than its comparison has a negative incremental cost, and a naive ratio would have reported cheaper-and-better as a catastrophic breach. That bug existed for about ten minutes.
+
+## Constraints are audited, not assumed
+
+**Decision.** Every constraint's binding frequency and dual value is recorded per rebalance and summarised in the report.
+
+**Why.** The original project advertised a CVaR constraint and a turnover cap. Neither had ever been checked for doing anything. On the shipped data the position cap does all the work, the turnover cap never binds, and CVaR binds once in forty-six rebalances. Saying so is more useful than the diagram.
+
 ## What was deliberately not built
 
 - **A web dashboard.** It would demonstrate front-end work, not research judgement, and the HTML memo already travels as a single file.

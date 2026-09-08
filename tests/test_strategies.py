@@ -218,3 +218,43 @@ def test_non_finite_training_data_is_refused(context, small_config):
     broken = FitContext(dirty, context.target_returns, None, context.constraints)
     with pytest.raises(ValueError, match="non-finite"):
         build_strategy("tracking", small_config).fit(broken)
+
+
+def test_constraint_activity_reports_a_binding_position_cap(context, small_config):
+    """With a 22% cap on five assets and an equity-heavy target, the cap must bind."""
+    tight = FitContext(context.asset_returns, context.target_returns, None, Constraints(0.22, None))
+    fit = build_strategy("tracking", small_config).fit(tight)
+    assert fit.detail["cap_binding_count"] >= 1
+    assert fit.detail["cap_shadow_price"] > 0, "a binding cap must carry a positive shadow price"
+    assert fit.detail["turnover_binding"] is False, "no prior holdings, so no turnover constraint"
+
+
+def test_constraint_activity_reports_a_binding_turnover_cap(context, small_config):
+    # Feasible but far from where the optimiser wants to be, with a cap that
+    # allows only a small step toward it. (An *infeasible* prior -- say 100% in
+    # one asset under a 40% cap -- would correctly fall back rather than bind.)
+    previous = np.array([0.0, 0.0, 0.2, 0.4, 0.4])
+    tight = FitContext(
+        context.asset_returns, context.target_returns, previous, Constraints(small_config.max_weight, 0.10)
+    )
+    fit = build_strategy("tracking", small_config).fit(tight)
+    assert fit.detail["turnover_binding"] is True
+    assert fit.detail["turnover_share_of_cap"] == pytest.approx(1.0, abs=1e-3)
+    assert fit.detail["turnover_shadow_price"] > 0
+
+
+def test_projected_heuristics_report_binding_flags_but_no_shadow_prices(context, small_config):
+    fit = build_strategy("top_correlation", small_config).fit(context)
+    assert fit.detail["cap_binding_count"] >= 1, "top-correlation fills the cap by construction"
+    assert "cap_shadow_price" not in fit.detail, "projection duals are geometric, not economic"
+
+
+def test_constraint_activity_summary_has_one_row_per_strategy(small_panel, small_config):
+    from etflab.backtest import run_zoo
+    from etflab.diagnostics import constraint_activity_summary
+
+    results = run_zoo(small_panel, small_config, ("tracking", "equal_weight"))
+    summary = constraint_activity_summary(results)
+    assert list(summary.index) == ["tracking", "equal_weight"]
+    assert 0.0 <= summary.loc["tracking", "cap_binds_share"] <= 1.0
+    assert 0.0 <= summary.loc["tracking", "turnover_used_share_of_cap"] <= 1.0 + 1e-9

@@ -74,6 +74,22 @@ def _add_experiment_args(parser: argparse.ArgumentParser) -> None:
     costs.add_argument("--impact-coef", type=float, default=defaults.impact_coef)
     costs.add_argument("--max-participation", type=float, default=defaults.max_participation)
 
+    governance = parser.add_argument_group("governance")
+    governance.add_argument(
+        "--hurdle",
+        type=float,
+        default=defaults.hurdle,
+        help="benefit must cover incremental cost this many times, or the book reverts",
+    )
+    governance.add_argument("--hurdle-window", type=int, default=defaults.hurdle_window)
+    governance.add_argument(
+        "--hurdle-grace",
+        type=int,
+        default=defaults.hurdle_grace,
+        help="consecutive breaching days before the switch trips",
+    )
+    governance.add_argument("--no-reactivate", action="store_true", help="once shut off, stay off")
+
     inference = parser.add_argument_group("inference")
     inference.add_argument("--bootstrap-samples", type=int, default=defaults.bootstrap_samples)
     inference.add_argument("--bootstrap-block", type=int, default=defaults.bootstrap_block)
@@ -116,6 +132,10 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         portfolio_notional=args.notional,
         impact_coef=args.impact_coef,
         max_participation=args.max_participation,
+        hurdle=args.hurdle,
+        hurdle_window=args.hurdle_window,
+        hurdle_grace=args.hurdle_grace,
+        hurdle_reactivate=not args.no_reactivate,
         bootstrap_samples=args.bootstrap_samples,
         bootstrap_block=args.bootstrap_block,
         inference_seed=args.inference_seed,
@@ -575,6 +595,10 @@ def _config_to_args(config: ExperimentConfig) -> dict[str, Any]:
         "notional": config.portfolio_notional,
         "impact_coef": config.impact_coef,
         "max_participation": config.max_participation,
+        "hurdle": config.hurdle,
+        "hurdle_window": config.hurdle_window,
+        "hurdle_grace": config.hurdle_grace,
+        "no_reactivate": not config.hurdle_reactivate,
         "bootstrap_samples": config.bootstrap_samples,
         "bootstrap_block": config.bootstrap_block,
         "inference_seed": config.inference_seed,

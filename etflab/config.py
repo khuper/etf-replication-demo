@@ -94,6 +94,12 @@ class ExperimentConfig:
     portfolio_notional: float = 50_000_000.0
     max_participation: float = 0.05
 
+    # --- governance ---------------------------------------------------------
+    hurdle: float = 20.0
+    hurdle_window: int = 252
+    hurdle_grace: int = 63
+    hurdle_reactivate: bool = True
+
     # --- inference ----------------------------------------------------------
     bootstrap_samples: int = 2_000
     bootstrap_block: int = 21
@@ -181,6 +187,13 @@ class ExperimentConfig:
             raise ValueError("portfolio_notional must be positive: costs scale with the size of the book.")
         if not 0 < self.max_participation <= 1:
             raise ValueError("max_participation must lie in (0, 1].")
+
+        if self.hurdle <= 0:
+            raise ValueError("hurdle must be positive: a model that need not pay for itself is not governed.")
+        if self.hurdle_window < 21:
+            raise ValueError("hurdle_window must be at least a month of trading days.")
+        if self.hurdle_grace < 1:
+            raise ValueError("hurdle_grace must be at least one day.")
 
         if self.bootstrap_samples < 100:
             raise ValueError("bootstrap_samples below 100 gives confidence intervals nobody should trust.")

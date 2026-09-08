@@ -27,18 +27,21 @@ import pandas as pd
 
 from etflab.backtest import BacktestResult, run_backtest, run_zoo
 from etflab.config import ExperimentConfig
+from etflab.costs import build_cost_model
 from etflab.data.panel import PricePanel
 from etflab.diagnostics import (
     BreakEven,
     beta_shock,
     capacity_curve,
     conditional_tail_performance,
+    constraint_activity_summary,
     cost_decomposition,
     cost_drag_curve,
     cost_sensitivity,
     rolling_correlation_stability,
     worst_window_replay,
 )
+from etflab.governance import GovernanceReport, HurdlePolicy, govern
 from etflab.inference import (
     BootstrapCI,
     DeflatedSharpeResult,
@@ -652,6 +655,11 @@ class Study:
     capacity: BreakEven | None
     cost_curve: pd.DataFrame | None
     cost_split: pd.DataFrame | None
+    #: Which advertised constraints actually bound, per strategy.
+    constraints: pd.DataFrame = field(default_factory=pd.DataFrame)
+    #: The kill switch, evaluated against the benchmark and against the simplest
+    #: strategy that is statistically indistinguishable from the winner.
+    governance: dict[str, GovernanceReport] = field(default_factory=dict)
     #: Which optional analyses ran. The results digest depends on them, so a
     #: verification re-run has to switch on exactly the same set.
     analyses: dict[str, bool] = field(default_factory=dict)
@@ -688,6 +696,12 @@ class Study:
         if self.sweep is not None:
             payload["pbo"] = round(self.sweep.pbo.pbo, 12)
             payload["best_config"] = self.sweep.best_config
+        for key, report in self.governance.items():
+            payload[f"governance_{key}"] = {
+                "days_off": report.days_off,
+                "switches": report.switches,
+                "final_state": report.final_state,
+            }
         return payload
 
 
@@ -739,6 +753,29 @@ def run_study(
         curve = cost_drag_curve(panel, config, race.best)
         split = cost_decomposition(panel, config, race.best, benchmark)
 
+    step("Reading constraint activity")
+    constraints = constraint_activity_summary(race.results)
+
+    step("Applying the kill switch")
+    policy = HurdlePolicy(
+        hurdle=config.hurdle,
+        window=config.hurdle_window,
+        grace=config.hurdle_grace,
+        reactivate=config.hurdle_reactivate,
+    )
+    cost_model = build_cost_model(config, panel.assets)
+    governance: dict[str, GovernanceReport] = {}
+    governance["benchmark"] = govern(best_result, race.results[benchmark], policy, cost_model, panel.asset_returns)
+    simplest = race.simplest_indistinguishable
+    if simplest not in (race.best, benchmark):
+        governance["simplest"] = govern(best_result, race.results[simplest], policy, cost_model, panel.asset_returns)
+    # The question that actually bites: does the *rebalancing* pay for itself?
+    # ``static`` is the same estimator with the trading turned off, so this is
+    # the cleanest possible test of whether the walk-forward machinery earns
+    # its keep, independent of whether any optimiser beats a naive basket.
+    if "static" in race.results and race.best != "static" and simplest != "static":
+        governance["static"] = govern(best_result, race.results["static"], policy, cost_model, panel.asset_returns)
+
     sweep = None
     if with_sweep:
         step("Sweeping the parameter grid and measuring overfitting")
@@ -765,6 +802,8 @@ def run_study(
         capacity=capacity,
         cost_curve=curve,
         cost_split=split,
+        constraints=constraints,
+        governance=governance,
         analyses={
             "sweep": with_sweep,
             "recovery": with_recovery and panel.truth is not None,
