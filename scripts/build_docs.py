@@ -117,37 +117,53 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?")
 _CODE = re.compile(r"`[^`]*`")
 
 
-def _skeleton_and_numbers(block: str) -> tuple[str, list[float]]:
+def _decimals(token: str) -> int:
+    """How many decimal places a printed number carries."""
+    if "e" in token.lower():
+        return 0
+    return len(token.split(".")[1]) if "." in token else 0
+
+
+def _skeleton_and_numbers(block: str) -> tuple[str, list[tuple[float, int]]]:
     """Split a block into its non-numeric skeleton and the numbers it quotes.
 
-    Numbers inside backticks (hashes, fingerprints, run ids) are part of the
-    skeleton -- they are identifiers, and an identifier that changed is stale.
+    Each number is returned with the precision it was printed at. Numbers inside
+    backticks (hashes, fingerprints, run ids) are part of the skeleton -- they
+    are identifiers, and an identifier that changed is stale.
     """
-    numbers: list[float] = []
+    numbers: list[tuple[float, int]] = []
+
+    def capture(match: re.Match[str]) -> str:
+        token = match.group()
+        numbers.append((float(token.replace(",", "")), _decimals(token)))
+        return "#"
+
     pieces: list[str] = []
     cursor = 0
     for code in _CODE.finditer(block):
-        pieces.append(
-            _NUMBER.sub(
-                lambda m: (numbers.append(float(m.group().replace(",", ""))), "#")[1], block[cursor : code.start()]
-            )
-        )
+        pieces.append(_NUMBER.sub(capture, block[cursor : code.start()]))
         pieces.append(code.group())
         cursor = code.end()
-    pieces.append(_NUMBER.sub(lambda m: (numbers.append(float(m.group().replace(",", ""))), "#")[1], block[cursor:]))
+    pieces.append(_NUMBER.sub(capture, block[cursor:]))
     return "".join(pieces), numbers
 
 
-def tables_match(committed: str, generated: str, *, rel: float = 0.02, abs_tol: float = 0.02) -> tuple[bool, str]:
+def tables_match(committed: str, generated: str, *, last_digit_units: float = 3.0) -> tuple[bool, str]:
     """Do two results blocks say the same thing?
 
     The skeleton -- every word, every identifier, the strategy ordering, the
     verdict's clauses -- must match exactly. A changed word means the conclusion
-    changed. The numbers may differ by a small tolerance, because an interior
-    point solver on a different CPU and BLAS legitimately lands a few ULPs away,
-    and a README that fails CI because 0.0830 became 0.0831 on another machine
-    is a check nobody keeps. A number that moves by more than the tolerance is a
-    real change and fails.
+    changed.
+
+    Numbers get a tolerance derived purely from the precision they were printed
+    at: the last printed digit may move by a few units, the rest must hold. So
+    "5.73%" tolerates 5.76 but not 5.79, "0.083" tolerates 0.086, and a rank
+    statistic printed as "24%" tolerates 27. No relative slack: a one-percent
+    move in a tracking error is a real change, not float noise. This is the honest amount of slack: a different CPU and
+    BLAS legitimately lands an interior-point solve a few ULPs away, which
+    re-orders near-tied configurations and wobbles a rank-based statistic by a
+    point or two, while a real change in a result still moves the digits that
+    are meant to be read.
     """
     skeleton_a, numbers_a = _skeleton_and_numbers(committed)
     skeleton_b, numbers_b = _skeleton_and_numbers(generated)
@@ -156,11 +172,11 @@ def tables_match(committed: str, generated: str, *, rel: float = 0.02, abs_tol: 
     if len(numbers_a) != len(numbers_b):
         return False, f"{len(numbers_a)} numbers committed, {len(numbers_b)} generated"
     worst = 0.0
-    for a, b in zip(numbers_a, numbers_b, strict=True):
-        limit = max(abs_tol, rel * max(abs(a), abs(b)))
+    for (a, decimals), (b, _) in zip(numbers_a, numbers_b, strict=True):
+        limit = last_digit_units * 10.0 ** (-decimals)
         gap = abs(a - b)
         worst = max(worst, gap)
-        if gap > limit:
+        if gap > limit + 1e-12:
             return False, f"a number moved from {a:g} to {b:g} (tolerance {limit:g})"
     return True, f"largest numeric deviation {worst:g}"
 
