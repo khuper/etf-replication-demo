@@ -1,7 +1,9 @@
-cvxpy>=1.7.5
-yfinance>=1.2.0
-pandas>=2.3.3
-numpy>=1.26.4
-matplotlib>=3.9.4
-seaborn>=0.13.2
-rich>=13.9.4
+# Runtime dependencies. Pinned to minimum working versions rather than exact
+# pins: this is a library and a CLI, not a deployed service, and over-pinning a
+# research tool makes it unusable inside somebody else's environment.
+cvxpy>=1.5
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+matplotlib>=3.8
+rich>=13.7

@@ -1,154 +1,224 @@
-# Synthetic ETF Replicator
+# ETF Replication Lab
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
+[![CI](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+![Tests](https://img.shields.io/badge/tests-203-brightgreen.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![CVXPY](https://img.shields.io/badge/CVXPY-convex%20optimization-8B0000.svg)
-![Status](https://img.shields.io/badge/status-learning%20project-lightgrey.svg)
 
-This repository is a terminal playground for testing whether a basket of ETFs can replicate a target. It pulls market data with `yfinance`, estimates weights with constrained optimization, and evaluates them in a walk-forward simulation with weight drift and transaction costs.
+**Can a basket of liquid ETFs replicate a harder-to-access index — and does the optimisation actually earn its keep against a naive alternative?**
 
-The current default target is `PSP`, using a basket of liquid ETFs as proxies. Replication is a research problem here—not a claim that the synthetic basket is a useful trading strategy. The interesting question is whether replication works under explicit constraints and whether it beats simple alternatives after costs.
+This repository answers that question the way it would have to be answered on a desk: every strategy on identical data, windows, constraints and costs; the difference tested rather than eyeballed; the result corrected for the fact that nine strategies were tried; and the whole thing reproducible from one command with no API key and no network.
 
-## Research terminal
+The headline finding is not flattering to the machinery, which is why it is the headline:
 
-Launch the interactive terminal:
+> Constrained tracking-error optimisation beats an equal-weight basket by a wide and statistically significant margin — and is **indistinguishable from simply solving the problem once in 2015 and never trading again.** The CVaR constraint moves the largest weight by 23 basis points. Rebalancing forty-five times bought nothing that a bootstrap can detect.
 
 ```bash
-etf-lab
+pip install -e . && etf-lab study
 ```
 
-The terminal keeps an experiment configuration in memory and accepts short commands:
+That command runs the full workflow — data quality gates, a nine-strategy horse race with bootstrap confidence intervals, a weight-recovery study, a 54-configuration parameter sweep with overfitting diagnostics, cost and capacity analysis — and writes a self-contained HTML research memo. It takes about four minutes and needs nothing from the internet.
 
-```text
-target PSP
-assets SPY QQQ VEA VWO BND LQD TIP GLD VNQ
-dates 2020-01-01 2026-01-01
-set rebalance 63
-set costs 5
-set model tracking
-/run
-```
+---
 
-Each run displays out-of-sample metrics and the latest allocation, then exports its exact configuration, metrics, returns, weights, and turnover history.
+## Results
 
-For scripts and repeatable experiments, use the one-shot interface:
+<!-- RESULTS-TABLE:START -->
+| Strategy | Tracking error | Correlation | Down capture | Turnover / yr | vs. equal weight |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **shrunk** | 5.73% | 0.939 | 0.86 | 8.2% | -1.79% (significant) |
+| tracking | 5.73% | 0.939 | 0.87 | 8.7% | -1.79% (significant) |
+| cvar | 5.73% | 0.939 | 0.87 | 8.7% | -1.79% (significant) |
+| static | 5.75% | 0.938 | 0.87 | 5.9% | -1.77% (significant) |
+| ols_projected | 5.76% | 0.938 | 0.84 | 10.4% | -1.75% (significant) |
+| ridge | 5.82% | 0.937 | 0.83 | 6.8% | -1.69% (significant) |
+| top_correlation | 6.84% | 0.927 | 1.00 | 4.3% | -0.68% (significant) |
+| equal_weight | 7.52% | 0.921 | 0.62 | 7.7% | benchmark |
+| inverse_vol | 10.32% | 0.872 | 0.41 | 11.7% | +2.81% (worse) |
+| _irreducible floor_ | _5.48%_ | _1.000_ | _--_ | _--_ | _the best any long-only basket of these candidates can do_ |
+
+**Verdict.** Best out-of-sample tracking error: shrunk at 5.73% annualised, versus 7.52% for equal_weight. The market's irreducible tracking error -- the part no long-only basket of these assets can remove -- is 5.48%. shrunk therefore captures 88% of the available improvement over equal_weight, and sits +0.25% above the floor. That gap is statistically real: the 95% bootstrap interval for the tracking-error difference is [-2.19%, -1.44%] and Diebold-Mariano rejects equal expected squared tracking error (p = < 1e-16). Correcting for having run 9 strategies, the best result survives the multiple-comparison correction (Hansen SPA p = < 0.0005; White Reality Check p = < 0.0005). The simplest strategy that cannot be statistically separated from the winner is tracking (5.73%). On this evidence the extra machinery in shrunk is not doing measurable work.
+
+**Overfitting.** Probability of backtest overfitting across 54 configurations: **24%**, against a matched pure-noise reference of 58%. Moderate: selection carries real risk.
+
+**Consistency.** Weight error decays as T^-0.41 (parametric rate would be T^-0.50), reaching L1 = 0.083 at 8,064 observations. The out-of-sample cost of that estimation error falls to +0.3bp of tracking error above the true portfolio. The estimator is consistent, but the weights are far less identified than the fit is: collinear candidates leave the objective nearly flat in the directions that separate them, so a large weight error buys almost no extra tracking error. That is why weight stability and turnover get their own columns in the horse race.
+
+<sub>Generated by `scripts/build_docs.py` from run `26a3f3559164935e` on synthetic data (fingerprint `8a1a5c8e7582afed`), 2,887 out-of-sample days. Reproduce with `make study`.</sub>
+<!-- RESULTS-TABLE:END -->
+
+![Out-of-sample tracking error by strategy](docs/figures/horse_race.png)
+
+![Rolling tracking error](docs/figures/rolling_tracking_error.png)
+
+---
+
+## Why the default data is generated
+
+The shipped experiment runs on a **simulated market**, not downloaded prices. That is a design decision with two reasons behind it, and it is stated up front because a reader deserves to judge it rather than discover it:
+
+1. **It reproduces.** Same seed, same numbers, on any machine, forever. CI runs the entire research pipeline on every commit and checks the results digest — a claim that would be impossible against a live vendor feed, and a repo whose headline numbers the reader cannot regenerate is a screenshot.
+2. **The answer is known.** The target is constructed as `w_true · r_assets` plus a component no candidate asset spans. So the population-optimal feasible portfolio *is* `w_true`, the minimum attainable tracking error *is* the volatility of the unspanned part, and an estimator can be scored on **whether it recovers the right answer** — not merely on whether it fits.
+
+That second point is what real data cannot give you, and it is the difference between "this model tracked well on one history" and "this model is consistent":
+
+![Weight recovery and the out-of-sample cost of estimation error](docs/figures/recovery.png)
+
+The generator is not trying to be a market simulator. It is trying to be **hard in the ways that matter**: Student-t innovations, GARCH volatility clustering, a three-state Markov regime process with correlation breakdown in crises, a flight-to-quality leg that rallies when equities fall, and an irreducible residual. Everything is in [`etflab/data/synthetic.py`](etflab/data/synthetic.py), documented and seeded.
+
+**Running on real prices is one flag**, and the identical pipeline:
 
 ```bash
-etf-lab run \
-  --target PSP \
-  --assets SPY QQQ VEA VWO BND LQD TIP GLD VNQ \
-  --start 2020-01-01 \
-  --end 2026-01-01 \
-  --rebalance-days 63 \
-  --costs-bps 5
+etf-lab study --data-source yfinance --online --target PSP --start 2015-01-01 --end 2025-12-31
 ```
 
-## What is in the repo
+Conclusions about *this estimator versus that one* transfer to real data. Conclusions about the real PSP do not, and are not claimed anywhere in this repo.
 
-| File | Purpose |
+---
+
+## The parts worth looking at
+
+### The look-ahead sentinel — [`tests/test_lookahead.py`](tests/test_lookahead.py)
+
+Every claim this project makes is downstream of "no decision used information that did not exist yet". That is not verifiable by reading code — one misplaced index and the backtest becomes fiction that looks like a good result. So it is verified mechanically, two ways, for every strategy in the zoo:
+
+- **Truncation.** Run on the full history, then on history truncated earlier. Every shared ledger row must be **bit-identical** (`atol=0, rtol=0`).
+- **Future corruption.** Triple every price after a cut date and reverse the target's path. Every row before the cut must be unchanged.
+
+A separate test covers the subtle case: the market-impact model needs a volatility estimate, and taking it from the period being traded into would price the trade with the future. Quadrupling volatility only after the cut must not change a single basis point of cost charged before it.
+
+### Statistics that were validated, not just imported — [`etflab/inference.py`](etflab/inference.py)
+
+Three problems get handled explicitly, because ignoring any one is how backtests come to be believed:
+
+| Problem | Treatment | Validation in the test suite |
+| --- | --- | --- |
+| Serial dependence | Stationary bootstrap (Politis–Romano 1994), Newey–West HAC | Realised mean block length; interval coverage on an AR(1) |
+| Comparing two strategies | Diebold–Mariano with the Harvey–Leybourne–Newbold correction | **Empirical size 5.4% at a nominal 5%**; power ≈ 100% against a 20% tighter competitor |
+| Comparing nine strategies | White's Reality Check and Hansen's SPA | Size ≤ 5% under the null; SPA is never less powerful than the Reality Check |
+| Selecting over a grid | Deflated Sharpe Ratio (Bailey–López de Prado 2014) | Rejects the best of 80 worthless trials; accepts a strong result from three |
+
+A test that calls `diebold_mariano` and checks it returns a float verifies nothing about whether the test is a test. These check size and power by simulation.
+
+### Overfitting priced in, against its own null — [`etflab/overfitting.py`](etflab/overfitting.py)
+
+The parameter sweep runs 54 configurations and reports the best. Combinatorially Symmetric Cross-Validation (Bailey, Borwein, López de Prado & Zhu 2017) measures what that costs, over every balanced split of the sample.
+
+One subtlety this repo handles that most implementations do not: **CSCV on a fixed sample does not have a clean 0.5 null.** Because the in-sample and out-of-sample halves partition one finite history, a configuration that ran hot in one has, mechanically, less luck left for the other. So the reported PBO is compared against a matched pure-noise reference of the same shape, averaged over replications — not against a textbook constant.
+
+![Backtest overfitting](docs/figures/overfitting.png)
+
+### The naive strategies are not strawmen — [`etflab/strategies.py`](etflab/strategies.py)
+
+Nine strategies, one feasible set. An equal-weight or inverse-volatility target that would breach the position cap is *projected* onto the same constraint set the optimiser lives in, by the same Euclidean projection. A comparison where the fancy model gets constraints and the baseline does not is not evidence, it is a rigged demo.
+
+`static` — solve once, never trade again — exists specifically to ask whether the rebalancing machinery is doing anything. On this data it is not.
+
+### Costs that scale with the size of the book — [`etflab/costs.py`](etflab/costs.py)
+
+A flat basis-point charge says trading $1bn costs the same per dollar as trading $1m. The `spread_impact` model adds half-spread plus square-root market impact against an assumed liquidity table, so "would you run this with real money, and how much?" becomes answerable:
+
+![Cost and capacity](docs/figures/capacity.png)
+
+Writing the tests found a real bug here: the flat model was charging on the halved reporting figure rather than on traded notional, so every cost was half what it should have been and the initial deployment out of cash was half again. [`tests/test_backtest.py`](tests/test_backtest.py) now pins both models against each other on an identical trade.
+
+### Risk where it actually shows up
+
+![Tracking error by regime](docs/figures/regimes.png)
+
+An average tracking error is a promise about a market that never happens. The report conditions on regime, on the target's worst days, and on its worst 21-day windows. The active-risk attribution uses a full Euler decomposition **including the target as a short leg** — the step usually skipped, and skipping it produces contributions that do not sum to the tracking error, so nobody can check them. Here they sum to it exactly, and [`tests/test_metrics.py`](tests/test_metrics.py) asserts it to nine significant figures.
+
+---
+
+## Reproducibility is a test, not an assurance
+
+Every run writes a manifest containing the semantic config hash, a fingerprint of the actual price matrix, the git SHA and dirty flag, library and solver versions, and a digest of the numeric results.
+
+`run_id` is a hash of **the experiment and the data — deliberately not the code.** If the SHA were in it, every commit would rename every run and the interesting question would become unanswerable. Keeping them separate makes it answerable:
+
+```bash
+etf-lab verify outputs/<run-id>
+```
+
+Two runs sharing a `run_id` are the same experiment. If their results digests differ, **the code changed the answer** — which is either a fix or a regression, and either way it should be loud rather than silent. CI runs that check on every commit, plus a second independent process to catch anything that leaked a wall clock or an unseeded generator into a research result.
+
+```bash
+etf-lab runs                         # everything in the registry
+etf-lab diff <run-a> <run-b>         # what changed, and the first plausible explanation
+```
+
+---
+
+## Command surface
+
+| Command | What it does |
 | --- | --- |
-| [`src/replicator.py`](src/replicator.py) | Main workflow for data download, optimization, expanding-window backtest, stress testing, and plot generation. |
-| [`src/cli.py`](src/cli.py) | Interactive terminal and reproducible one-shot command. |
-| [`src/config.py`](src/config.py) | Validated experiment configuration. |
-| [`src/reporting.py`](src/reporting.py) | Rich terminal tables and run exports. |
-| [`src/rolling_correlation_analysis.py`](src/rolling_correlation_analysis.py) | Separate analysis script for rolling ETF-to-target correlations across normal and stress periods. |
-| [`correlation_heatmap.png`](correlation_heatmap.png) | Example correlation heatmap generated by the replicator script. |
-| [`cumulative_returns.png`](cumulative_returns.png) | Example cumulative return comparison plot generated by the replicator script. |
+| `etf-lab study` | The full workflow: horse race, recovery, sweep, costs, figures, HTML memo |
+| `etf-lab compare` | Just the horse race, with confidence intervals and a generated verdict |
+| `etf-lab run` | A single strategy backtest — the fastest path to a number |
+| `etf-lab sweep` | Parameter grid with PBO and deflated Sharpe |
+| `etf-lab validate` | Data quality gates only; exits non-zero if a blocking gate fails |
+| `etf-lab verify <dir>` | Re-run a stored experiment and compare the results digest |
+| `etf-lab runs` / `diff` | Query and compare the run registry |
+| `etf-lab shell` | Interactive research terminal |
 
-## Method at a glance
+Every command takes `--json` and every command that produces a number also produces the provenance for it. There is no path through this CLI that prints a result you cannot later reproduce or audit.
+
+---
+
+## Architecture
 
 ```text
-yfinance prices
-  -> daily returns
-  -> constrained optimization using prior data only
-  -> walk-forward holdings with drift and trading costs
-  -> metrics, allocations, and reproducible run artifacts
+etflab/
+├── config.py         ExperimentConfig — frozen, validated, content-hashed
+├── data/
+│   ├── synthetic.py  the generated market, and its ground truth
+│   ├── providers.py  synthetic | yfinance | csv, behind one interface
+│   ├── quality.py    nine gates that run before any weight is estimated
+│   └── cache.py      content-addressed, human-readable
+├── strategies.py     the model zoo, one shared feasible set
+├── backtest.py       the walk-forward engine — the only place a decision date meets a return date
+├── costs.py          flat bps, and half-spread + square-root impact
+├── metrics.py        out-of-sample metrics, regimes, Euler risk attribution
+├── inference.py      stationary bootstrap, Diebold–Mariano, Reality Check, SPA, deflated Sharpe
+├── overfitting.py    CSCV → probability of backtest overfitting
+├── diagnostics.py    stress replay, tail conditioning, cost and capacity curves
+├── research.py       orchestration, and the verdict generated from the statistics
+├── provenance.py     run identity, code version, environment fingerprint
+├── registry.py       an append-only index of every run
+└── report/           terminal, figures, Markdown and self-contained HTML
 ```
 
-The default optimization in `src/replicator.py` focuses on:
+Data quality gates are not optional decoration: `_load_checked_panel` is the only door into the data, a failing gate aborts the run, and `--allow-degraded` stamps the degradation into the manifest so nobody can later mistake the result for a clean one.
 
-- minimizing squared tracking error versus the target
-- enforcing long-only weights
-- capping single-position concentration
-- limiting turnover between rebalance steps
+---
 
-The CVaR constraint remains available as an optional model (`set model cvar` or `--model cvar`) so its effect can be compared with plain tracking-error minimization instead of being silently imposed.
+## What would break this
 
-## Quickstart
+The numbers above are conditional on assumptions worth attacking directly:
+
+- **The liquidity table is illustrative, not measured.** Half-spreads and ADVs are order-of-magnitude figures in [`etflab/costs.py`](etflab/costs.py). Replace them with real ones and re-run.
+- **The market is simulated.** Its statistical features were chosen to be realistic, but they were *chosen*. The estimator comparison transfers; a claim about the real PSP does not.
+- **The candidate universe is fixed and hand-picked.** In the synthetic setting the true portfolio is inside the candidate set by construction. On real prices it might not be, and choosing today's surviving ETFs is survivorship bias that flatters every number.
+- **No borrow, financing, creation/redemption friction, or tax.** Small for a long-only fully-invested book, but omissions.
+- **Execution is modelled at the close.** Intraday slippage and the timing risk of working a large order over days are not charged for.
+- **The target is unlevered by construction.** Setting `--leverage 1.4` puts the true portfolio outside the feasible set, which is closer to the real problem of replicating a levered private-equity proxy with unlevered ETFs — and the tracking error roughly doubles.
+
+---
+
+## Development
 
 ```bash
-git clone https://github.com/khuper/etf-replication-demo
-cd etf-replication-demo
-python -m venv venv
-source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install -e .
+make install-dev
+make check          # ruff + mypy + the full suite, exactly what CI runs
+make study          # run the shipped experiment
+make figures        # regenerate docs/figures and the results table above
+make verify         # re-run the latest study and check the digest
 ```
 
-Run the research terminal:
+203 tests, no network required. The suite is structured around the claims rather than the modules: [`test_lookahead.py`](tests/test_lookahead.py) defends point-in-time correctness, [`test_reproducibility.py`](tests/test_reproducibility.py) defends run identity and determinism, [`test_inference.py`](tests/test_inference.py) validates the statistics by simulation, and [`test_backtest.py`](tests/test_backtest.py) pins the engine arithmetic against hand computations.
 
-```bash
-etf-lab
-```
-
-Run the rolling correlation analysis:
-
-```bash
-python src/rolling_correlation_analysis.py
-```
-
-## Generated outputs
-
-Terminal runs create a timestamped directory under `outputs/` containing:
-
-- `config.json`
-- `metrics.json`
-- `returns.csv`
-- `weights.csv`
-- `turnover.csv`
-
-The legacy plotting scripts also produce:
-
-- `correlation_heatmap.png`
-- `cumulative_returns.png`
-- `outputs/correlation_stats.csv`
-- `outputs/rolling_correlation_individual.png`
-- `outputs/rolling_correlation_overlay.png`
-- `outputs/rolling_mean_correlation.png`
-
-## Testing
-
-The repository now includes a small unit test suite for the replicator core logic. Run it locally with:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-A GitHub Actions workflow is also included so tests run on pushes and pull requests.
-
-## Configuration
-
-The terminal and one-shot command expose the main research inputs without source edits:
-
-- asset tickers
-- target ticker
-- start and end dates
-- `max_weight`
-- `max_turnover`
-- `initial_train_size`
-- rebalance frequency
-- model (`tracking` or `cvar`)
-- transaction costs
-
-## Limitations
-
-This is still a compact learning project, and several gaps remain if you wanted to take it further:
-
-- market data comes from `yfinance`, which is convenient but not institutional-grade
-- transaction costs use a simple basis-point estimate; spread and market-impact models are not included
-- the stress test is intentionally simple
-- there is no price-data cache yet
-- the project does not yet compare the optimized result with simple regression and equal-weight baselines
+Further reading: [`docs/methodology.md`](docs/methodology.md) for the walk-forward protocol and the estimators, and [`docs/decisions.md`](docs/decisions.md) for the design choices and what was rejected.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+[MIT](LICENSE).
