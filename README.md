@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/khuper/etf-replication-demo/actions/workflows/ci.yml)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-![Tests](https://img.shields.io/badge/tests-232-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-234-brightgreen.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 **Can a basket of liquid ETFs replicate a harder-to-access index — and does the optimisation actually earn its keep against a naive alternative?**
@@ -39,7 +39,7 @@ That command runs the full workflow — data quality gates, a nine-strategy hors
 
 **Verdict.** Best out-of-sample tracking error: shrunk at 5.73% annualised, versus 7.52% for equal_weight. The market's irreducible tracking error -- the part no long-only basket of these assets can remove -- is 5.48%. shrunk therefore captures 88% of the available improvement over equal_weight, and sits +0.25% above the floor. That gap is statistically real: the 95% bootstrap interval for the tracking-error difference is [-2.19%, -1.44%] and Diebold-Mariano rejects equal expected squared tracking error (p = < 1e-16). Correcting for having run 9 strategies, the best result survives the multiple-comparison correction (Hansen SPA p = < 0.0005; White Reality Check p = < 0.0005). The simplest strategy that cannot be statistically separated from the winner is tracking (5.73%). On this evidence the extra machinery in shrunk is not doing measurable work.
 
-**Overfitting.** Probability of backtest overfitting across 54 configurations: **28%**, against a matched pure-noise reference of 58%. Moderate: selection carries real risk.
+**Overfitting.** Probability of backtest overfitting across 54 configurations: **21%**, against a matched pure-noise reference of 58%. Moderate: selection carries real risk.
 
 **Consistency.** Weight error decays as T^-0.41 (parametric rate would be T^-0.50), reaching L1 = 0.083 at 8,064 observations. The out-of-sample cost of that estimation error falls to +0.3bp of tracking error above the true portfolio. The estimator is consistent, but the weights are far less identified than the fit is: collinear candidates leave the objective nearly flat in the directions that separate them, so a large weight error buys almost no extra tracking error. That is why weight stability and turnover get their own columns in the horse race.
 
@@ -234,7 +234,7 @@ make figures        # regenerate docs/figures and the results table above
 make verify         # re-run the latest study and check the digest
 ```
 
-232 tests, no network required. The suite is structured around the claims rather than the modules: [`test_lookahead.py`](tests/test_lookahead.py) defends point-in-time correctness, [`test_reproducibility.py`](tests/test_reproducibility.py) defends run identity and determinism, [`test_inference.py`](tests/test_inference.py) validates the statistics by simulation, [`test_governance.py`](tests/test_governance.py) proves the kill switch trips when it should and never looks ahead, and [`test_backtest.py`](tests/test_backtest.py) pins the engine arithmetic against hand computations.
+234 tests, no network required. The suite is structured around the claims rather than the modules: [`test_lookahead.py`](tests/test_lookahead.py) defends point-in-time correctness, [`test_reproducibility.py`](tests/test_reproducibility.py) defends run identity and determinism, [`test_inference.py`](tests/test_inference.py) validates the statistics by simulation, [`test_governance.py`](tests/test_governance.py) proves the kill switch trips when it should and never looks ahead, and [`test_backtest.py`](tests/test_backtest.py) pins the engine arithmetic against hand computations.
 
 Further reading: [`docs/methodology.md`](docs/methodology.md) for the walk-forward protocol and the estimators, and [`docs/decisions.md`](docs/decisions.md) for the design choices and what was rejected.
 

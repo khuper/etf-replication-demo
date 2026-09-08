@@ -83,3 +83,30 @@ def test_performance_matrix_rewards_tighter_tracking():
     performance = performance_from_active(active)
     assert performance["tight"].mean() > performance["loose"].mean()
     assert (performance <= 0).all().all(), "negative squared error is never positive"
+
+
+def test_pbo_is_invariant_to_noise_below_solver_tolerance():
+    """Configurations that differ only at the level of optimiser convergence
+    noise must rank identically on every machine, or PBO becomes a property of
+    the BLAS library rather than of the strategy."""
+    base = _noise_frame(n_periods=1200, n_configs=20, seed=3)
+    # Duplicate several configurations so genuine ties exist, then perturb at
+    # 1e-9 relative -- an order of magnitude below the resolution.
+    frame = base.copy()
+    for column in ("c1", "c2", "c3", "c4"):
+        frame[column] = frame["c0"]
+    rng = np.random.default_rng(7)
+    perturbed = frame * (1.0 + 1e-9 * rng.standard_normal(frame.shape))
+    perturbed_other = frame * (1.0 + 1e-9 * rng.standard_normal(frame.shape))
+
+    a = probability_of_backtest_overfitting(perturbed, n_splits=10)
+    b = probability_of_backtest_overfitting(perturbed_other, n_splits=10)
+    assert a.pbo == b.pbo
+    assert a.selected_configs == b.selected_configs
+
+
+def test_tie_resolution_does_not_erase_real_differences():
+    frame = _noise_frame(n_periods=1200, n_configs=20, seed=3)
+    frame["c0"] = frame["c0"] + 0.30
+    result = probability_of_backtest_overfitting(frame, n_splits=10)
+    assert result.pbo < 0.05

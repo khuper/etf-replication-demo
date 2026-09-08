@@ -68,6 +68,7 @@ def probability_of_backtest_overfitting(
     *,
     n_splits: int = 12,
     max_combinations: int = 2000,
+    tie_resolution: float = 1e-6,
 ) -> OverfittingResult:
     """Run CSCV over a matrix of per-period performance contributions.
 
@@ -86,6 +87,11 @@ def probability_of_backtest_overfitting(
     max_combinations:
         Cap on ``C(S, S/2)``, sampled deterministically from the front of the
         enumeration when exceeded. The cap is reported, never silent.
+    tie_resolution:
+        Relative resolution, as a fraction of the mean absolute performance,
+        below which two configurations are treated as tied. The default sits
+        two orders of magnitude above interior-point solver tolerance and
+        several below any economically meaningful gap.
 
     Notes
     -----
@@ -121,13 +127,25 @@ def probability_of_backtest_overfitting(
     oos_scores: list[float] = []
     ranks: list[float] = []
 
+    # Differences smaller than the optimiser's own convergence tolerance are not
+    # differences. Two configurations whose position cap never binds produce
+    # the same portfolio up to ~1e-8, and ranking them on the noise below that
+    # makes PBO a function of which BLAS and CPU ran the backtest. Quantising
+    # the means at a relative resolution well above solver noise and well below
+    # any real gap turns those pairs into deterministic ties, which ``rank``
+    # then averages the same way on every machine.
+    resolution = tie_resolution * float(np.abs(values).mean() or 1.0)
+
+    def quantise(array: np.ndarray) -> np.ndarray:
+        return np.round(array / resolution) * resolution
+
     for train_blocks in combos:
         train = list(train_blocks)
         test = sorted(all_blocks - set(train))
-        train_mean = block_sums[train].sum(axis=0) / block_lengths[train].sum()
-        test_mean = block_sums[test].sum(axis=0) / block_lengths[test].sum()
+        train_mean = quantise(block_sums[train].sum(axis=0) / block_lengths[train].sum())
+        test_mean = quantise(block_sums[test].sum(axis=0) / block_lengths[test].sum())
 
-        best = int(np.argmax(train_mean))
+        best = int(np.argmax(train_mean))  # first of any tied maximum: deterministic
         # Relative rank of the in-sample winner among out-of-sample results,
         # averaged over ties, mapped into (0, 1).
         order = pd.Series(test_mean).rank(method="average").to_numpy()
