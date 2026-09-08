@@ -1,1 +1,0 @@
-"""ETF replication demo package."""
